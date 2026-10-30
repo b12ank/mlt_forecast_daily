@@ -1,0 +1,30 @@
+data:
+  daily: 电价数据/shandong_pmos_daily.csv
+  hourly: 电价数据/shandong_pmos_hourly.csv
+  encoding: gb18030
+  mean_tolerance: 0.001
+  snapshot_origin: '2026-10-25'
+task:
+  horizons: [2, 3, 4, 5, 6, 7]
+  timezone: Asia/Shanghai
+features:
+  groups: [daily]
+model:
+  name: reference
+  strategy: shared
+  seed: 42
+  threads: 4
+  params: {}
+weather:
+  weather_source: history  # history 或 forecast，仅控制回测推理；predict 固定使用 forecast
+  history: develop/data/weather_data_daily.csv
+  forecast: develop/data/weather_data_daily_predict.csv
+  match_origins: false
+backtest:
+  training_target_start: '2022-01-01'
+  test: ['2026-07-01', '2026-10-20']
+  window: expanding
+  retrain_days: 1
+evaluation:
+  protocol: evaluation_v1
+  equal_tolerance: 0.00000001

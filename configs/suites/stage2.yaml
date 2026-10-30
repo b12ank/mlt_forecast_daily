@@ -1,0 +1,4 @@
+stage: stage2
+seed: 42
+threads: 4
+feature_sets: [F0, F1, F2]
