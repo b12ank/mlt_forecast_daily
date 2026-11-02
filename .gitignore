@@ -6,3 +6,10 @@ outputs/
 build/
 dist/
 tests/
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws

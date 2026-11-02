@@ -130,6 +130,16 @@ class WeatherData:
                 "请调整 test 区间或提供完整预报文件，不能用历史天气补齐")
         return coverage
 
+    def select_range(self, start, end, source="history"):
+        """Explicit inclusive dates; no source substitution or market-hour shift."""
+        if source not in {"history", "forecast"} or source not in self.tables:
+            raise WeatherBlocked(f"未加载 {source} 天气表")
+        dates = pd.date_range(day(start), day(end))
+        missing = dates.difference(self.tables[source].index)
+        if len(missing):
+            raise WeatherMissing(f"{source} 天气缺少完整日期: {', '.join(missing.strftime('%Y-%m-%d'))}")
+        return self.tables[source].loc[dates].copy()
+
     def select(self, origin, source="history"):
         if source not in {"history", "forecast"}:
             raise ValueError(f"未知天气来源: {source}")

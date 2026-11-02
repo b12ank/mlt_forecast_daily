@@ -7,3 +7,11 @@ catboost>=1.2,<2
 lightgbm>=4.0,<5
 tzdata>=2024.1
 pytest>=7.4,<9
+
+# timesfm
+torch>=2.5,<3
+safetensors>=0.5.3,<1
+
+# TimesFM 2.5 official XReg (CPU regression; PyTorch uses the selected device)
+jax==0.6.2
+jaxlib==0.6.2

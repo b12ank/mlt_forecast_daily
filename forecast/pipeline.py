@@ -58,6 +58,14 @@ def validate_config(base):
     groups = base["features"]["groups"]
     validate_groups(groups)
     validate_model(base["model"])
+    from .features.xreg import is_xreg
+    if (base["model"]["name"] == "timesfm_xreg") != is_xreg(groups):
+        raise ValueError("timesfm_xreg 与 XReg 特征组必须配套")
+    is_timesfm = base["model"]["name"] == "timesfm"
+    if is_timesfm != (groups == ["price_history"]):
+        raise ValueError("timesfm 与 price_history 必须配套使用")
+    if is_timesfm and base["weather"]["match_origins"]:
+        raise ValueError("TimesFM 纯电价基线不读取天气，match_origins 必须为 false")
     if base["model"]["name"] != "reference" and groups == ["daily"]:
         raise ValueError("新增模型必须使用 price_calendar 特征")
     if groups in (["weather_full"], ["weather_full_no_missing"]) and base["model"]["name"] in {"reference", "recent_mean", "weekday_mean"}:
@@ -122,14 +130,25 @@ def weather_context(config, mode):
             "weather_publication_time_check": "not_run", "weather_historical_revision_audit": "not_run"}
 
 
-def build_at(market, origin, groups, weather_data=None, match_origins=False, weather_source="history"):
+def build_at(market, origin, groups, weather_data=None, match_origins=False, weather_source="history", context_length=512):
     # Integrity checks cover both tables; daily features only receive daily records.
     info = information_set(market.daily, market.hourly.iloc[:0], origin)
+    from .features.xreg import is_xreg, build as build_xreg
+    if is_xreg(groups):
+        frame, evidence = build_xreg(info, groups, weather_data, weather_source, context_length, match_origins)
+        evidence["market_source"] = market.sources.get("daily", {})
+        # Unique business-date keys locate raw records even when source rows were unsorted.
+        evidence["market_row_locator"] = "时刻 equals source_dates; columns named per group"
+        if hasattr(market, "daily_rows"):
+            for task in evidence["horizons"].values():
+                for mapping in task["market"].values():
+                    mapping["csv_rows"] = [market.daily_rows.get(d) for d in mapping["source_dates"]]
+        return frame, evidence
     if match_origins:
         if weather_data is None:
             raise ValueError("天气共同样本限制缺少宽表")
         weather_data.select(origin, source=weather_source)
-    frame, evidence = build_features(info, groups, weather_data, weather_source)
+    frame, evidence = build_features(info, groups, weather_data, weather_source, context_length)
     if match_origins:
         evidence["sample_basis"] = f"six target dates present in {weather_source} weather wide table; no publication/version audit"
     return frame, evidence
@@ -170,9 +189,16 @@ def training_set(market, origin, config, cache=None, weather_data=None):
     return X, y
 
 
-def predict_origins(market, origins, config, model_factory=None, weather_data=None, progress=None, weather_source="history"):
+def predict_origins(market, origins, config, model_factory=None, weather_data=None, progress=None, weather_source="history", runtime_metadata=None, backend_cache=None):
     rows, records, provenance, cache = [], [], [], {}
     factory = model_factory or (lambda: create_model(config["model"], config["features"]["groups"]))
+    is_timesfm = config["model"]["name"] in {"timesfm", "timesfm_xreg"}
+    shared_model = factory() if is_timesfm else None
+    if config["model"]["name"] == "timesfm_xreg" and shared_model is not None:
+        shared_model.backend_cache = backend_cache
+    context_length = config["model"]["params"].get("context_length", 512) if is_timesfm else 512
+    if is_timesfm and runtime_metadata is not None:
+        runtime_metadata["timesfm"] = shared_model.runtime_metadata
     for index, origin in enumerate(origins, 1):
         d = day(origin)
         row = {"predict_time": str(d.date()), "D+2": str((d+pd.Timedelta(days=2)).date()),
@@ -180,8 +206,8 @@ def predict_origins(market, origins, config, model_factory=None, weather_data=No
         row.update({f"pred_D+{h}": np.nan for h in range(2, 8)})
         try:
             X, evidence = build_at(market, d, config["features"]["groups"], weather_data,
-                                   config["weather"]["match_origins"], weather_source)
-            model = factory()
+                                   config["weather"]["match_origins"], weather_source, context_length)
+            model = shared_model if is_timesfm else factory()
             if model.requires_training:
                 train_X, train_y = training_set(market, d, config, cache, weather_data)
                 if train_X.empty:
@@ -193,9 +219,14 @@ def predict_origins(market, origins, config, model_factory=None, weather_data=No
             if pred.shape != (6,) or not np.isfinite(pred).all():
                 raise ValueError("模型必须按顺序返回六个有限预测值")
             row.update({f"pred_D+{h}": float(pred[h-2]) for h in range(2, 8)})
+            if config["model"]["name"] == "timesfm_xreg":
+                evidence["xreg_fit"] = model.last_diagnostics
             provenance.append(evidence)
             records.append({"predict_time": row["predict_time"], "status": "passed", "training_rows": len(train_X),
                             "training_origins": len(train_X)//6})
+            if config["model"]["name"] == "timesfm_xreg":
+                records[-1].update(training_mode="in_context_xreg", xreg_calls=6,
+                                  fit_labels_per_horizon=context_length, fit_label_last=str((d-pd.Timedelta(days=1)).date()))
         except MissingHistory as exc:
             records.append({"predict_time": row["predict_time"], "status": "failed", "reason": str(exc)})
         rows.append(row)
@@ -228,7 +259,7 @@ def write_json(path, value):
 
 def metadata(config, market, mode, weather_data=None):
     versions = {}
-    for package in ("pandas", "numpy", "PyYAML", "matplotlib", "pytest", "scikit-learn", "scipy", "joblib", "threadpoolctl", "catboost", "lightgbm", "tzdata"):
+    for package in ("pandas", "numpy", "PyYAML", "matplotlib", "pytest", "scikit-learn", "scipy", "joblib", "threadpoolctl", "catboost", "lightgbm", "tzdata", "torch", "safetensors", "jax", "jaxlib", "ml_dtypes", "opt_einsum"):
         try:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
@@ -253,7 +284,55 @@ def metadata(config, market, mode, weather_data=None):
             "historical_revision_audit": "not_run", "publication_time_check": "not_run"}
 
 
-def run_experiment(config, mode, origin=None, output_dir=None, market=None, weather_data=None, progress=None):
+def check_backtest(config, market=None, weather_data=None):
+    """Inspect backtest inputs without creating a model, fitting, predicting or writing files."""
+    validate_config(config)
+    origins = target_origins(config)
+    name = config["model"]["name"]
+    from .models.regression import check_dependency
+    check_dependency(name)
+    weights = {"status": "not_applicable"}
+    context_length = 512
+    if name in {"timesfm", "timesfm_xreg"}:
+        from .models.timesfm import check_checkpoint, validate_params, DEFAULTS
+        params = config["model"]["params"]
+        if name == "timesfm_xreg":
+            params = {k: v for k, v in params.items() if k in DEFAULTS}
+        context_length = validate_params(params)["context_length"]
+        weights = check_checkpoint(params)
+    market = load_market(config["data"]) if market is None else market
+    integrity = check_integrity(market, config["data"]["mean_tolerance"])
+    source = prediction_weather_source(config, "backtest")
+    forecast_coverage = None
+    if needs_weather(config):
+        if weather_data is None:
+            weather_data = WeatherData(config["weather"], load_forecast=source == "forecast")
+        if source == "forecast":
+            forecast_coverage = weather_data.check_forecast_coverage(config["backtest"]["test"])
+    else:
+        weather_data = None
+    failed = []
+    for origin in origins:
+        try:
+            build_at(market, origin, config["features"]["groups"], weather_data,
+                     config["weather"]["match_origins"], source, context_length)
+        except MissingHistory as exc:
+            failed.append({"predict_time": str(origin.date()), "reason": str(exc)})
+    target_dates = pd.date_range(*map(day, config["backtest"]["test"]))
+    labels = market.labels.reindex(target_dates).to_numpy(dtype=float)
+    missing_labels = target_dates[~np.isfinite(labels)].strftime("%Y-%m-%d").tolist()
+    return {"status": "failed" if failed or missing_labels else "passed", "mode": "check_only",
+            "model": name, "configuration": "passed", "dependencies": "passed", "weights": weights,
+            "integrity": integrity, "target_interval": config["backtest"]["test"],
+            "origin_count": len(origins), "ready_origins": len(origins)-len(failed),
+            "failed_origins": failed, "missing_target_labels": missing_labels,
+            "weather": {**weather_context(config, "backtest"), "forecast_test_coverage": forecast_coverage},
+            "availability_policy": AVAILABILITY_POLICY, "publication_time_check": "not_run",
+            "historical_revision_audit": "not_run", "training": "not_run", "prediction": "not_run",
+            "note": "仅检查配置、输入数据、依赖与本地权重格式；未训练、未预测、未创建回测结果。检查通过不代表模型推理已验证。"}
+
+
+def run_experiment(config, mode, origin=None, output_dir=None, market=None, weather_data=None, progress=None, backend_cache=None):
     # Validate the command and date range before creating output artifacts.
     if mode not in {"backtest", "predict"}:
         raise ValueError(f"未知运行模式: {mode}")
@@ -275,11 +354,15 @@ def run_experiment(config, mode, origin=None, output_dir=None, market=None, weat
         forecast_coverage = None
         if mode == "backtest" and weather_data is not None and weather_source == "forecast":
             forecast_coverage = weather_data.check_forecast_coverage(config["backtest"]["test"])
+        if config["model"]["name"] == "timesfm_xreg" and weather_data is not None:
+            for d in origins:
+                weather_data.select_range(d-pd.Timedelta(days=config['model']['params'].get('context_length', 512)), d-pd.Timedelta(days=1), "history")
+                weather_data.select_range(d, d+pd.Timedelta(days=7), weather_source)
         if mode == "predict" and weather_data is not None:
             weather_data.select(day(origin), source="forecast")
         integrity = check_integrity(market, config["data"]["mean_tolerance"])
         predictions, records, features = predict_origins(market, origins, config, weather_data=weather_data, progress=progress,
-                                                       weather_source=weather_source)
+                                                       weather_source=weather_source, runtime_metadata=meta, backend_cache=backend_cache)
         # Future truth can only be joined after the prediction loop has finished.
         actuals = actual_table(predictions, market.labels, blank=mode == "predict")
         metrics = evaluate(predictions, actuals, config["evaluation"]["equal_tolerance"])

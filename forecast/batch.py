@@ -50,6 +50,9 @@ def exact_keys(value, keys, label):
 
 
 def expand_suite(name, selections_path=None):
+    if name in {"timesfm1", "timesfm2"}:
+        from .timesfm_suite import expand
+        return expand(selections_path, name)
     if name not in {"stage1", "stage2", "stage3", "stage4"}:
         raise ValueError("suite 必须为 stage1/stage2/stage3/stage4")
     suite_path = DEVELOP/"configs/suites"/f"{name}.yaml"
@@ -137,6 +140,9 @@ def expand_suite(name, selections_path=None):
 
 
 def prepare(name, selections_path=None):
+    if name in {"timesfm1", "timesfm2"}:
+        from .timesfm_suite import prepare as prepare_timesfm
+        return prepare_timesfm(selections_path, name)
     experiments, selection, paths = expand_suite(name, selections_path)
     # Reporting is a shared requirement, unlike optional per-model dependencies.
     importlib.import_module("matplotlib")
@@ -281,6 +287,9 @@ def summarize(directory, state):
 <h1>{escape(state['suite'])} 批次汇总</h1><p>{escape(note)}</p><ul>{links}</ul>
 <h2>实验状态与耗时</h2><div class="scroll">{status_table.to_html(index=False, na_rep='—', escape=True)}</div>
 <h2>自身与共同成功样本指标</h2><div class="scroll">{metrics.to_html(index=False, na_rep='—', escape=True)}</div></html>'''
+    if state['suite'] == 'timesfm2':
+        from .timesfm_suite import window_summary
+        page = page.replace('</html>', window_summary(directory, state)+'</html>')
     (directory/"report.html").write_text(page, encoding="utf-8")
 
 
@@ -316,6 +325,7 @@ def run_batch(name, check_only=False, resume=None, selections_path=None):
         state.pop("summary_error", None)
         print(f"批次目录：{directory}", flush=True)
         atomic_json(directory/"batch.json", state)
+        backend_cache = {}
         for index, (experiment, entry) in enumerate(zip(experiments, state["experiments"]), 1):
             print(f"[{index}/{len(experiments)}] {entry['id']}", flush=True)
             if completed(entry):
@@ -335,7 +345,7 @@ def run_batch(name, check_only=False, resume=None, selections_path=None):
                 def progress(current, total, record):
                     print(f"  起点 {current}/{total} {record['predict_time']} {record['status']}", flush=True)
                 run_experiment(experiment["config"], "backtest", output_dir=attempt, market=market,
-                               weather_data=weather, progress=progress)
+                               weather_data=weather, progress=progress, **({"backend_cache": backend_cache} if name in {"timesfm1", "timesfm2"} else {}))
                 meta = json.loads((attempt/"metadata.json").read_text(encoding="utf-8"))
                 entry["status"] = meta["status"]
                 entry["artifact_hashes"] = {file: digest(attempt/file) for file in ARTIFACTS}

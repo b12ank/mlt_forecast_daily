@@ -1,0 +1,15 @@
+{
+  "source": "E:\\pycharmproject\\epf\\TF\\src\\timesfm",
+  "model": "google/timesfm-2.5-200m-pytorch",
+  "original_sha256": {
+    "configs.py": "336ba7e3e65ce3ae1cb3b047477ab7ca10295b802d210ace7e67053991e7d110",
+    "torch/__init__.py": "755232ec70116e213d6684f8dc452b2910a4fab84608c3ab8a716fc3b28c7832",
+    "torch/dense.py": "89ab44a5603b82e9fffcb00778ec09fd489e46b67d8c286a6afe6dfa36dc7f3c",
+    "torch/normalization.py": "1fe6b467222817141ef981f2a270f87110c54079bb58a324b37e3e4afd7667c4",
+    "torch/transformer.py": "a78ab9541d23cfbb8c587fbe7ceccb572003dd66cb72ef252500eb19e97ed5c9",
+    "torch/util.py": "32c7159f3dffc05e8e14f460353454d8c074a5d7b5f654259f9d65612ce4a703",
+    "timesfm_2p5/timesfm_2p5_base.py": "a8c09be3e115264a730db7f4cc494dab557f0881c48496f3cdcaacd8e6c0f833",
+    "timesfm_2p5/timesfm_2p5_torch.py": "cd96a988a4864f0af0f2ea8c82e96072a72a3d4a01d4a3c893cfdd3b14854cc6",
+    "utils/xreg_lib.py": "7ae456ddc86eb4d05cfc96be461824bb6d836b6f6a0c18d7dd8987f99db053d8"
+  }
+}

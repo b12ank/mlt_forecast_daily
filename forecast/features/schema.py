@@ -12,7 +12,10 @@ FEATURE_SETS = {
 
 
 def validate_groups(groups):
-    if groups != ["daily"] and groups not in FEATURE_SETS.values():
+    from .xreg import is_xreg
+    if is_xreg(groups):
+        return
+    if groups not in (["daily"], ["price_history"]) and groups not in FEATURE_SETS.values():
         raise ValueError(f"不支持的特征组: {groups}")
 
 
@@ -20,6 +23,13 @@ def input_schema(groups, model_name=None, independent=False):
     from ..weather_data import weather_columns
 
     validate_groups(groups)
+    from .xreg import is_xreg, schema
+    if is_xreg(groups):
+        return schema(groups)
+    if groups == ["price_history"]:
+        return {"numeric": ["实时电价"], "categorical": [], "columns": ["实时电价"],
+                "column_count": 1, "dimension_basis": "univariate_daily_sequence",
+                "weather_missing_indicators": False, "input_type": "PriceHistory"}
     simple = {"reference": "last_price", "recent_mean": "price_mean7",
               "weekday_mean": "same_weekday_mean28"}
     if model_name in simple:

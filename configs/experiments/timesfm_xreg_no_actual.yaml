@@ -1,0 +1,16 @@
+features:
+  # 全特征：
+  # groups: [ price_history, xreg_actual, xreg_dayahead, xreg_grid_forecast, weather_full, xreg_calendar ]
+  groups: [price_history, xreg_dayahead, xreg_grid_forecast, weather_full, xreg_calendar]
+model:
+  name: timesfm_xreg
+  strategy: independent
+  seed: 42
+  threads: 4
+  params:
+    context_length: 512
+    checkpoint_dir: E:/pycharmproject/epf/models/timesFM
+    ridge: 0.01
+weather:
+  weather_source: history
+  match_origins: true

@@ -4,6 +4,8 @@
 
 **四阶段实验请先阅读 [BATCH_RUNS.md](BATCH_RUNS.md)**；天气接口规范见 [WEATHER_DATA.md](WEATHER_DATA.md)。
 
+新增 TimesFM 2.5 纯历史电价基线：默认使用截至 D−1 的连续 512 天日价，预测 D～D+7 后输出 D+2～D+7。通过 `--config configs/experiments/timesfm.yaml` 接入现有回测和预测，独立安装与权重配置见 [TIMESFM.md](TIMESFM.md)。四阶段实验清单保持不变。
+
 stage2 支持从 Ridge、CatBoost、LightGBM 中人工选择两个或三个不同模型。当前 `configs/selections.yaml` 已选择全部三个，每个分别比较 F0/F1/F2，共九个串行实验。
 
 stage3 默认对 LightGBM、CatBoost 比较 F3（天气＋缺失标记，520列）、F4（天气，260列）、F5（F0＋天气且无天气缺失标记，302列），共六个实验，不重跑F2。原stage3参数搜索已迁移至stage4，可选择F0～F5与共享/独立结构。候选配置分别使用 `stage3_models` 和 `stage4_combinations`。
@@ -60,7 +62,7 @@ conda activate long_terem_epf
 python -m pip install -r develop/requirements.txt
 ```
 
-环境使用 Python 3.11，运行和测试依赖见上述安装命令。环境已经存在时直接激活，不重复创建。也可以用 `conda run -n long_terem_epf python ...` 执行。
+环境使用 Python 3.11，运行和测试依赖见上述安装命令。环境已经存在时直接激活，不重复创建。也可以用 `conda run -n long_term_epf python ...` 执行。
 
 ## 运行
 
@@ -154,3 +156,17 @@ predict_time,D+2,D+7,pred_D+2,pred_D+3,pred_D+4,pred_D+5,pred_D+6,pred_D+7
 - 每个新实验只增加必要的配置，复用回测与评价代码。不得复制训练脚本形成多个版本。
 - 修改指标定义必须实现新协议版本；不能更改配置中的容差却仍称为 `evaluation_v1`。
 - 天气接口是否实现与天气可用性是否审计通过分别记录；本轮宽表接口属于用户授权的研究例外，不代表历史预报验证通过。
+
+
+## TimesFM XReg：timesfm1
+
+在 `long_term_epf` 环境中进入 `develop` 后运行：
+
+```powershell
+python run.py batch --suite timesfm1 --check-only
+python run.py batch --suite timesfm1
+```
+
+全特征基线与五个逐组消融，共六个实验；每个起点分别拟合六次 XReg，
+使用512天电价上下文，输出D+2～D+7。单独backtest、predict、预报天气切换、
+数据边界及续跑方法见 [TIMESFM.md](TIMESFM.md)。原stage1～stage4保持原有清单。

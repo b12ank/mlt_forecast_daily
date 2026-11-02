@@ -4,7 +4,10 @@ from . import daily, hourly, weather, price_calendar
 from .schema import validate_groups, input_schema
 
 
-def build_features(info, groups, weather_data=None, weather_source="history"):
+def build_features(info, groups, weather_data=None, weather_source="history", context_length=512):
+    if groups == ["price_history"]:
+        from .price_history import build
+        return build(info, context_length)
     if groups != ["daily"] and groups not in (["hourly"], ["weather"]):
         validate_groups(groups)
         if "price_calendar" in groups:

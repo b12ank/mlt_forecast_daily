@@ -19,17 +19,28 @@ PACKAGES = {"ridge": "sklearn", "catboost": "catboost", "lightgbm": "lightgbm"}
 
 def validate_model(config):
     name = config["name"]
-    if name not in DEFAULTS:
+    if name not in DEFAULTS and name not in {"timesfm", "timesfm_xreg"}:
         raise ValueError(f"模型未实现: {name}")
     if config["strategy"] not in {"shared", "independent"}:
         raise ValueError("strategy 必须为 shared 或 independent")
-    if name not in PACKAGES and config["strategy"] != "shared":
+    if name == "timesfm_xreg":
+        if config["strategy"] != "independent":
+            raise ValueError("timesfm_xreg 必须为 independent")
+        from .timesfm_xreg import validate_params
+        validate_params(config["params"])
+    if name not in PACKAGES and name != "timesfm_xreg" and config["strategy"] != "shared":
         raise ValueError("简单基线无需独立训练")
     if type(config["seed"]) is not int or config["seed"] < 0:
         raise ValueError("seed 必须为非负整数")
     if type(config["threads"]) is not int or config["threads"] < 1:
         raise ValueError("threads 必须为正整数")
     params = config["params"]
+    if name == "timesfm_xreg":
+        return
+    if name == "timesfm":
+        from .timesfm import validate_params
+        validate_params(params)
+        return
     if not isinstance(params, dict) or set(params)-set(DEFAULTS[name]):
         raise ValueError(f"未知模型参数: {params}")
     for key, value in params.items():
@@ -45,6 +56,9 @@ def validate_model(config):
 
 
 def check_dependency(name):
+    if name == "timesfm_xreg":
+        from .timesfm_xreg import check_dependencies
+        check_dependencies()
     if name in PACKAGES:
         importlib.import_module(PACKAGES[name])
 

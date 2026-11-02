@@ -26,6 +26,7 @@ class MarketData:
     hourly: pd.DataFrame
     availability: dict = field(default_factory=dict)
     sources: dict = field(default_factory=dict)
+    daily_rows: dict = field(default_factory=dict)
 
     @property
     def labels(self):
@@ -75,7 +76,9 @@ def load_market(config):
         path = (PROJECT / config[freq]).resolve()
         tables[freq], times[freq] = read_table(path, config["encoding"], freq == "hourly")
         sources[freq] = {"path": str(path), "sha256": digest(path), "rows": len(tables[freq])}
-    return MarketData(tables["daily"], tables["hourly"], times, sources)
+    raw_dates = pd.read_csv(PROJECT/config["daily"], encoding=config["encoding"], usecols=["时刻"])["时刻"]
+    daily_rows = {str(pd.Timestamp(d).date()): i+2 for i, d in enumerate(raw_dates)}
+    return MarketData(tables["daily"], tables["hourly"], times, sources, daily_rows)
 
 
 def check_integrity(market, tolerance=0.001):
