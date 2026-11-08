@@ -124,6 +124,7 @@ python -m pytest develop/tests -o cache_dir=develop/outputs/pytest-cache -q
 - `predictions.csv`：每个预测起点一行，固定九列。
 - `actuals.csv`：相同日期键和六列真实值；未来预测为空。
 - `metrics.csv`：`scope, metric, value, count`；无法定义的指标为空。
+- backtest（包括 batch 内的回测）的 `metrics.csv` 最后一行额外记录 `runtime,elapsed_time,50min20s,` 形式的总耗时；`count` 为空。耗时四舍五入至秒，分钟不转换为小时，例如 `75min03s`。由于 `value` 包含这一文本行，程序读取时须先筛选评分指标，再用 `pd.to_numeric` 转为数值。
 - `checks.json`：数据检查、各起点状态与失败原因；未运行的检查明确为 `not_run`。
 - `features.json`：特征定义、输入文件与来源日期、原值、数据年龄和可用性依据。
 - `report.html`：无需联网的报告，可选择预测起点查看六天曲线、数值、误差分布及指标。
@@ -151,6 +152,10 @@ TimesFM 窗口及分月汇总同样包含 SMAPE；相对 L512 的 SMAPE 差值�
 主要比较指标为 MAE，其他指标并列展示，不合成为总分。跨实验比较须有相同市场输入版本、业务规则、评价协议和边界策略，天气宽表版本与实验口径也须一致。允许无天气基线与历史天气研究模型对照，并显示共同成功样本及覆盖率，但不能据此宣称预报天气的实际增益。旧档案口径与新宽表研究不能混合，旧文件不修改。评价只读原结果并创建新目录；曲线展示首个实验。
 
 `evaluate` 只输出新指标、评价元数据和报告，不伪造未执行的训练或预测文件。完整训练/预测运行会生成全部八类文件。
+
+普通 `backtest` 默认在 stderr 单行更新当前预测起点和目标日期，数据准备、结果保存和结束时显示对应状态，不输出每轮训练日志。重定向 stderr 时只输出开始和结束/失败信息；stdout 仍输出结果目录。`predict`、`evaluate` 和 `--check-only` 不增加该进度或耗时行。
+
+回测总耗时从配置校验通过、创建输出目录前开始，到数据准备、训练、预测、评分及主要结果（包括 HTML 报告）保存完成后结束，使用单调时钟，不包含最终耗时字段本身的写入。`metadata.json` 记录北京时间（含时区偏移）的 `started_at`、`ended_at` 和数值型 `elapsed_seconds`。失败或 Ctrl+C 中断时记录已耗时间及 `failed`/`interrupted` 状态，不保留完整评分文件；强制结束进程不保证留下结束时间。batch 外层原有耗时另包含调用及产物哈希等开销，与单次回测计时范围不同。旧结果和已启动进程不补写；重新 `evaluate` 不生成原训练耗时。
 
 ## 后续扩展规则
 

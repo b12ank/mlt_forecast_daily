@@ -2,8 +2,49 @@
 import argparse
 import json
 import sys
+import unicodedata
 
-from forecast.pipeline import load_config, run_experiment, evaluate_runs, check_backtest
+from forecast.pipeline import load_config, run_experiment, evaluate_runs, check_backtest, format_elapsed
+
+
+class BacktestProgress:
+    """Refresh one terminal line; redirected output only records start and finish."""
+    def __init__(self, stream=None):
+        self.stream = sys.stderr if stream is None else stream
+        self.interactive = self.stream.isatty()
+        self.width = 0
+        self.active = False
+
+    def __call__(self, event, **info):
+        final = event in {"finished", "failed", "interrupted"}
+        if event == "preparing":
+            message = "回测：正在准备数据"
+        elif event == "origin":
+            message = (f"回测 {info['current']}/{info['total']} | 起点 {info['predict_time']}"
+                       f" | 目标 {info['target_start']}～{info['target_end']}")
+        elif event == "saving":
+            message = "回测：正在保存结果"
+        else:
+            label = {"finished": "部分完成" if info.get("status") == "partial" else "完成",
+                     "failed": "失败", "interrupted": "已中断"}[event]
+            message = f"回测{label} | 耗时 {format_elapsed(info['elapsed_seconds'])}"
+        if self.interactive:
+            width = sum(2 if unicodedata.east_asian_width(c) in {"W", "F"} else 1 for c in message)
+            self.stream.write("\r" + message + " " * max(0, self.width-width))
+            self.width = width
+            self.active = True
+            if final:
+                self.close()
+        elif event == "preparing" or final:
+            self.stream.write(message + "\n")
+        self.stream.flush()
+
+    def close(self):
+        if self.active:
+            self.stream.write("\n")
+            self.stream.flush()
+            self.active = False
+            self.width = 0
 
 
 def main(argv=None):
@@ -25,6 +66,7 @@ def main(argv=None):
     command.add_argument("--resume", help="原批次目录或 outputs 下的批次编号")
     command.add_argument("--selections", help="人工选择配置；相对 develop 或绝对路径")
     args = parser.parse_args(argv)
+    display = BacktestProgress() if args.command == "backtest" and not args.check_only else None
     try:
         if args.command == "batch":
             from forecast.batch import run_batch
@@ -40,10 +82,22 @@ def main(argv=None):
             return 0 if inspection["status"] == "passed" else 1
         else:
             output = run_experiment(load_config(args.config), args.command,
-                                    getattr(args, "date", None))
+                                    getattr(args, "date", None),
+                                    **({"status_callback": display} if display else {}))
+    except KeyboardInterrupt:
+        if display:
+            display.close()
+        else:
+            print("已中断", file=sys.stderr)
+        return 130
     except (ValueError, OSError, NotImplementedError, ImportError) as exc:
+        if display:
+            display.close()
         print(f"失败: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if display:
+            display.close()
     print(output)
     return 0
 

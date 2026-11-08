@@ -4,7 +4,10 @@ import importlib.metadata
 import json
 from pathlib import Path
 import platform
+import time
 import uuid
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -19,6 +22,15 @@ from .models import create_model
 from .models.regression import validate_model
 from .weather_data import WeatherData, PROTOCOL as WEATHER_PROTOCOL, SCENARIOS
 from .evaluation import DATE_COLUMNS, PRED_COLUMNS, TRUE_COLUMNS, arrays, evaluate, write_report
+
+
+def now():
+    return datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
+
+
+def format_elapsed(seconds):
+    minutes, seconds = divmod(int(seconds + 0.5), 60)
+    return f"{minutes}min{seconds:02d}s"
 
 
 def merge_config(base, override, path=""):
@@ -189,7 +201,7 @@ def training_set(market, origin, config, cache=None, weather_data=None):
     return X, y
 
 
-def predict_origins(market, origins, config, model_factory=None, weather_data=None, progress=None, weather_source="history", runtime_metadata=None, backend_cache=None):
+def predict_origins(market, origins, config, model_factory=None, weather_data=None, progress=None, weather_source="history", runtime_metadata=None, backend_cache=None, status_callback=None):
     rows, records, provenance, cache = [], [], [], {}
     factory = model_factory or (lambda: create_model(config["model"], config["features"]["groups"]))
     is_timesfm = config["model"]["name"] in {"timesfm", "timesfm_xreg"}
@@ -204,6 +216,9 @@ def predict_origins(market, origins, config, model_factory=None, weather_data=No
         row = {"predict_time": str(d.date()), "D+2": str((d+pd.Timedelta(days=2)).date()),
                "D+7": str((d+pd.Timedelta(days=7)).date())}
         row.update({f"pred_D+{h}": np.nan for h in range(2, 8)})
+        if status_callback:
+            status_callback("origin", current=index, total=len(origins), predict_time=row["predict_time"],
+                            target_start=row["D+2"], target_end=row["D+7"])
         try:
             X, evidence = build_at(market, d, config["features"]["groups"], weather_data,
                                    config["weather"]["match_origins"], weather_source, context_length)
@@ -332,25 +347,36 @@ def check_backtest(config, market=None, weather_data=None):
             "note": "仅检查配置、输入数据、依赖与本地权重格式；未训练、未预测、未创建回测结果。检查通过不代表模型推理已验证。"}
 
 
-def run_experiment(config, mode, origin=None, output_dir=None, market=None, weather_data=None, progress=None, backend_cache=None):
+def run_experiment(config, mode, origin=None, output_dir=None, market=None, weather_data=None, progress=None, backend_cache=None, status_callback=None):
     # Validate the command and date range before creating output artifacts.
     if mode not in {"backtest", "predict"}:
         raise ValueError(f"未知运行模式: {mode}")
     origins = target_origins(config) if mode == "backtest" else [day(origin)]
     validate_config(config)
     weather_source = prediction_weather_source(config, mode)
+    timed = mode == "backtest"
+    started_at = now() if timed else None
+    start = time.perf_counter() if timed else None
+    notify = status_callback if timed else None
+    if notify:
+        notify("preparing")
     directory = new_output(mode) if output_dir is None else Path(output_dir)
     if output_dir is not None:
         directory.mkdir(parents=True, exist_ok=False)
-    (directory/"config.yaml").write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
     meta = {"status": "running", "mode": mode, **weather_context(config, mode)}
     try:
+        (directory/"config.yaml").write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
+        if timed:
+            meta["started_at"] = started_at
+            write_json(directory/"metadata.json", meta)
         market = load_market(config["data"]) if market is None else market
         if needs_weather(config) and weather_data is None:
             weather_data = WeatherData(config["weather"], load_forecast=weather_source == "forecast")
         if not needs_weather(config):
             weather_data = None
         meta = metadata(config, market, mode, weather_data)
+        if timed:
+            meta["started_at"] = started_at
         forecast_coverage = None
         if mode == "backtest" and weather_data is not None and weather_source == "forecast":
             forecast_coverage = weather_data.check_forecast_coverage(config["backtest"]["test"])
@@ -362,11 +388,14 @@ def run_experiment(config, mode, origin=None, output_dir=None, market=None, weat
             weather_data.select(day(origin), source="forecast")
         integrity = check_integrity(market, config["data"]["mean_tolerance"])
         predictions, records, features = predict_origins(market, origins, config, weather_data=weather_data, progress=progress,
-                                                       weather_source=weather_source, runtime_metadata=meta, backend_cache=backend_cache)
+                                                       weather_source=weather_source, runtime_metadata=meta, backend_cache=backend_cache,
+                                                       **({"status_callback": notify} if notify else {}))
+        if notify:
+            notify("saving")
         # Future truth can only be joined after the prediction loop has finished.
         actuals = actual_table(predictions, market.labels, blank=mode == "predict")
         metrics = evaluate(predictions, actuals, config["evaluation"]["equal_tolerance"])
-        for name, table in [("predictions", predictions), ("actuals", actuals), ("metrics", metrics)]:
+        for name, table in [("predictions", predictions), ("actuals", actuals)]:
             table.to_csv(directory/f"{name}.csv", index=False, encoding="utf-8-sig")
         write_json(directory/"features.json", {"sources": meta["sources"],
             "input_schema": meta["input_schema"],
@@ -402,12 +431,27 @@ def run_experiment(config, mode, origin=None, output_dir=None, market=None, weat
                      "按分字段业务边界取数；电价及电网"
                      "未执行具体发布时间校验；历史修订版本未独立核验。"+meta["weather_note"])
         meta["status"] = "partial" if meta.get("failed_origins", 0) else "passed"
+        metrics.to_csv(directory/"metrics.csv", index=False, encoding="utf-8-sig")
+        if timed:
+            elapsed = time.perf_counter()-start
+            meta.update(started_at=started_at, ended_at=now(), elapsed_seconds=elapsed)
+            # Keep score computation numeric; append the human-readable runtime only on disk.
+            with (directory/"metrics.csv").open("a", encoding="utf-8", newline="") as stream:
+                stream.write(f"runtime,elapsed_time,{format_elapsed(elapsed)},\n")
         write_json(directory/"metadata.json", meta)
+        if notify:
+            notify("finished", status=meta["status"], elapsed_seconds=meta["elapsed_seconds"])
         return directory
-    except Exception as exc:
-        meta.update({"status": "failed", "error": str(exc)})
+    except (Exception, KeyboardInterrupt) as exc:
+        status = "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed"
+        meta.update({"status": status, "error": str(exc) or "用户中断"})
+        if timed:
+            meta.update(started_at=started_at, ended_at=now(), elapsed_seconds=time.perf_counter()-start)
+            (directory/"metrics.csv").unlink(missing_ok=True)
         write_json(directory/"metadata.json", meta)
-        write_json(directory/"checks.json", {"status": "failed", "error": str(exc), **weather_context(config, mode)})
+        write_json(directory/"checks.json", {"status": status, "error": meta["error"], **weather_context(config, mode)})
+        if notify:
+            notify(status, elapsed_seconds=meta["elapsed_seconds"])
         raise
 
 
