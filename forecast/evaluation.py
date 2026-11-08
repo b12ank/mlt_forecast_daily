@@ -11,6 +11,19 @@ HORIZONS = list(range(2, 8))
 DATE_COLUMNS = ["predict_time", "D+2", "D+7"]
 PRED_COLUMNS = DATE_COLUMNS + [f"pred_D+{h}" for h in HORIZONS]
 TRUE_COLUMNS = DATE_COLUMNS + [f"true_D+{h}" for h in HORIZONS]
+SMAPE_NOTE = (
+    "SMAPE（%）= 100 × mean(2 × |预测值−真实值| / (|预测值|+|真实值|))；"
+    "数值 20 表示 20%，范围 0～200%，越低越好。使用原始价格，不做小于 50 的截断；"
+    "真实值和预测值同时为 0 时，该点误差记为 0。仅统计有效样本，无有效样本时为空。"
+)
+
+
+def smape_values(predicted, actual):
+    """Pointwise SMAPE in percent for finite pairs; no floor or epsilon."""
+    p, y = np.asarray(predicted, dtype=float), np.asarray(actual, dtype=float)
+    denominator = np.abs(p) + np.abs(y)
+    return 200 * np.divide(np.abs(p-y), denominator,
+                           out=np.zeros_like(denominator), where=denominator != 0)
 
 
 def validate_wide(frame, prefix):
@@ -70,6 +83,8 @@ def evaluate(predictions, actuals, tolerance=1e-8, common_mask=None):
         errors = (p[:, indices] - y[:, indices])[v]
         add(scope, "MAE", float(np.abs(errors).mean()) if errors.size else None, errors.size)
         add(scope, "MSE", float(np.square(errors).mean()) if errors.size else None, errors.size)
+        smape = smape_values(p[:, indices][v], y[:, indices][v])
+        add(scope, "SMAPE", float(smape.mean()) if smape.size else None, smape.size)
     add("overall", "prediction_coverage", float(np.isfinite(p).mean()) if p.size else None, p.size)
     add("overall", "scored_coverage", float(valid.mean()) if valid.size else None, valid.size)
     complete = valid.all(axis=1)
@@ -143,5 +158,5 @@ select.addEventListener('change',draw);draw();
 <label>预测起点 <select id="origin"></select></label><p>蓝色：预测；橙色：真实</p>
 <svg id="curve" viewBox="0 0 800 290"></svg><pre id="values"></pre>
 <h2>误差分布</h2><img alt="误差分布" src="data:image/png;base64,{png}" style="max-width:100%">
-<h2>评价指标</h2>{metrics.to_html(index=False, na_rep='—', escape=True)}<script>{script}</script></html>"""
+<h2>评价指标</h2><p>{escape(SMAPE_NOTE)}</p>{metrics.to_html(index=False, na_rep='—', escape=True)}<script>{script}</script></html>"""
     path.write_text(page, encoding="utf-8")

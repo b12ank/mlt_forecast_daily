@@ -17,6 +17,7 @@ import pandas as pd
 import yaml
 
 from .data import DEVELOP, PROJECT, digest, load_market, check_integrity
+from .evaluation import SMAPE_NOTE
 from .models.regression import DEFAULTS, PACKAGES, check_dependency
 from .pipeline import (load_config, merge_config, validate_config, run_experiment, evaluate_runs,
                        new_output, needs_weather, target_origins, prediction_weather_source, weather_context)
@@ -286,7 +287,7 @@ def summarize(directory, state):
 <style>body{{font:15px system-ui;margin:30px}}table{{border-collapse:collapse}}td,th{{padding:7px;border:1px solid #ddd}}.scroll{{overflow:auto}}</style>
 <h1>{escape(state['suite'])} 批次汇总</h1><p>{escape(note)}</p><ul>{links}</ul>
 <h2>实验状态与耗时</h2><div class="scroll">{status_table.to_html(index=False, na_rep='—', escape=True)}</div>
-<h2>自身与共同成功样本指标</h2><div class="scroll">{metrics.to_html(index=False, na_rep='—', escape=True)}</div></html>'''
+<h2>自身与共同成功样本指标</h2><p>{escape(SMAPE_NOTE)}</p><div class="scroll">{metrics.to_html(index=False, na_rep='—', escape=True)}</div></html>'''
     if state['suite'] == 'timesfm2':
         from .timesfm_suite import window_summary
         page = page.replace('</html>', window_summary(directory, state)+'</html>')

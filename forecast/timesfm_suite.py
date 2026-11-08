@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .data import DEVELOP, PROJECT, digest, load_market
+from .evaluation import smape_values
 from .features.xreg import SETS
 from .pipeline import load_config, validate_config, check_backtest, weather_context
 from .weather_data import WeatherData
@@ -109,6 +110,8 @@ def window_summary(directory, state):
         if not np.isfinite(errors).all():
             raise ValueError('已完成实验含非有限误差')
         square = np.square(errors).ravel()
+        smape = smape_values(joined[[f'pred_D+{h}' for h in range(2, 8)]].to_numpy(),
+                             joined[[f'true_D+{h}' for h in range(2, 8)]].to_numpy()).ravel()
         metrics = pd.read_csv(path/'metrics.csv')
         row = {'experiment': entry['id'], 'context_length': entry['config']['model']['params']['context_length'],
                'origins': len(joined), 'elapsed_seconds': entry.get('elapsed_seconds'),
@@ -117,22 +120,26 @@ def window_summary(directory, state):
         for scope, metric in [('overall', 'MAE'), ('overall', 'MSE'), ('overall', 'prediction_coverage'),
                               ('curve', 'ordering_accuracy'), ('curve', 'direction_accuracy'), ('curve', 'turn_F1')]:
             row[metric] = float(metrics.loc[(metrics.scope == scope) & (metrics.metric == metric), 'value'].iloc[0])
+        # Compute from saved pairs so legacy metrics.csv files remain readable.
+        row['SMAPE'] = float(smape.mean())
         rows.append(row)
         dates = np.column_stack([(pd.to_datetime(joined.predict_time)+pd.Timedelta(days=h)).dt.strftime('%Y-%m').to_numpy()
                                  for h in range(2, 8)]).ravel()
         for month in sorted(set(dates)):
             e = errors.ravel()[dates == month]
             monthly.append({'experiment': entry['id'], 'target_month': month, 'count': len(e),
-                            'MAE': float(np.abs(e).mean()), 'MSE': float(np.square(e).mean())})
+                            'MAE': float(np.abs(e).mean()), 'MSE': float(np.square(e).mean()),
+                            'SMAPE': float(smape[dates == month].mean())})
     summary = pd.DataFrame(rows)
     if len(summary) and 'L512' in set(summary.experiment):
         baseline = summary.set_index('experiment').loc['L512']
-        for metric in ('MAE', 'MSE'):
+        for metric in ('MAE', 'MSE', 'SMAPE'):
             summary[metric+'_delta_vs_L512'] = summary[metric]-baseline[metric]
             summary[metric+'_change_percent_vs_L512'] = (summary[metric]/baseline[metric]-1)*100 if baseline[metric] else np.nan
     months = pd.DataFrame(monthly)
     summary.to_csv(directory/'window_summary.csv', index=False, encoding='utf-8-sig')
     months.to_csv(directory/'monthly_metrics.csv', index=False, encoding='utf-8-sig')
     return ('<h2>历史窗口长度对比</h2><p>月份按目标日期统计；每个起点与预测距离为一个评价点。'
-            '长度同时改变 XReg 拟合段与 TimesFM 残差上下文，未自动替换默认模型。</p>'
+            '长度同时改变 XReg 拟合段与 TimesFM 残差上下文，未自动替换默认模型。'
+            'SMAPE 单位为 %，相对 L512 的差值为百分点；相对变化以基线为分母，基线为 0 时为空。</p>'
             +summary.to_html(index=False, escape=True)+'<h2>分月误差</h2>'+months.to_html(index=False, escape=True))
