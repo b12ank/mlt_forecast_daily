@@ -13,3 +13,5 @@ tests/
 *.iml
 *.ipr
 *.iws
+
+data/old_test

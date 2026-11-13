@@ -1,7 +1,25 @@
+data:
+  daily: 电价数据/shandong_pmos_daily.csv
+  hourly: 电价数据/shandong_pmos_hourly.csv
+  encoding: gb18030
+  mean_tolerance: 0.001
+  snapshot_origin: '2026-10-25'
+task:
+  horizons:
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  timezone: Asia/Shanghai
 features:
-  # 全特征：
-  # groups: [ price_history, xreg_actual, xreg_dayahead, xreg_grid_forecast, weather_full, xreg_calendar ]
-  groups: [price_history, xreg_dayahead, xreg_grid_forecast, weather_full, xreg_calendar]
+  groups:
+  - price_history
+  - xreg_dayahead
+  - xreg_grid_forecast
+  - weather_full
+  - xreg_calendar
 model:
   name: timesfm_xreg
   strategy: independent
@@ -13,4 +31,16 @@ model:
     ridge: 0.01
 weather:
   weather_source: history
+  history: develop/data/weather_data_daily.csv
+  forecast: develop/data/weather_data_daily_predict.csv
   match_origins: true
+backtest:
+  training_target_start: '2022-01-01'
+  test:
+  - '2026-09-25'
+  - '2026-10-24'
+  window: expanding
+  retrain_days: 1
+evaluation:
+  protocol: evaluation_v1
+  equal_tolerance: 1.0e-08

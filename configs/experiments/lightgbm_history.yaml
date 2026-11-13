@@ -37,8 +37,8 @@ weather:
 backtest:
   training_target_start: '2022-01-01'
   test:
-  - '2026-07-01'
-  - '2026-10-20'
+  - '2026-09-25'
+  - '2026-10-24'
   window: expanding
   retrain_days: 1
 evaluation:

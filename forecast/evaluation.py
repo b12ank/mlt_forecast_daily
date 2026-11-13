@@ -12,8 +12,8 @@ DATE_COLUMNS = ["predict_time", "D+2", "D+7"]
 PRED_COLUMNS = DATE_COLUMNS + [f"pred_D+{h}" for h in HORIZONS]
 TRUE_COLUMNS = DATE_COLUMNS + [f"true_D+{h}" for h in HORIZONS]
 SMAPE_NOTE = (
-    "SMAPE（%）= 100 × mean(2 × |预测值−真实值| / (|预测值|+|真实值|))；"
-    "数值 20 表示 20%，范围 0～200%，越低越好。使用原始价格，不做小于 50 的截断；"
+    "SMAPE（%）= 100 × mean(2 × |预测值−真实值| / (|预测值|+|真实值|))；\n"
+    "数值 20 表示 20%，范围 0～200%，越低越好。使用原始价格，不做小于 50 的截断；\n"
     "真实值和预测值同时为 0 时，该点误差记为 0。仅统计有效样本，无有效样本时为空。"
 )
 
@@ -127,9 +127,17 @@ def write_report(path, predictions, actuals, metrics, title, note=""):
     png = base64.b64encode(buffer.getvalue()).decode("ascii")
     data = []
     for i, origin in enumerate(predictions["predict_time"]):
+        valid = np.isfinite(p[i]) & np.isfinite(y[i])
+        error = p[i, valid] - y[i, valid]
+        count = int(valid.sum())
+        scores = {"MAE": float(np.abs(error).mean()) if count else None,
+                  "MSE": float(np.square(error).mean()) if count else None,
+                  "SMAPE": float(smape_values(p[i, valid], y[i, valid]).mean()) if count else None,
+                  "count": count}
         data.append({"origin": origin, "dates": [(pd.Timestamp(origin)+pd.Timedelta(days=h)).strftime("%Y-%m-%d") for h in HORIZONS],
                      "pred": [float(v) if np.isfinite(v) else None for v in p[i]],
-                     "actual": [float(v) if np.isfinite(v) else None for v in y[i]]})
+                     "actual": [float(v) if np.isfinite(v) else None for v in y[i]],
+                     "scores": scores})
     payload = json.dumps(data, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c")
     script = """
 const data=PAYLOAD, select=document.getElementById('origin');
@@ -149,14 +157,21 @@ svg+=`<circle cx="${x(i)}" cy="${y(v)}" r="4" fill="${color}"><title>${key}: ${v
 r.dates.forEach((d,i)=>{svg+=`<text x="${x(i)}" y="265" text-anchor="middle" font-size="12">${d}</text>`;});
 document.getElementById('curve').innerHTML=svg;
 document.getElementById('values').textContent=r.dates.map((d,i)=>`${d}　预测 ${r.pred[i]??'缺失'}　真实 ${r.actual[i]??'未知'}`).join('\\n');
+const score=r.scores, fmt=(v,suffix='')=>v===null?'—':v.toFixed(2)+suffix;
+document.getElementById('origin-metrics').textContent=`MAE：${fmt(score.MAE)} | MSE：${fmt(score.MSE)} | SMAPE：${fmt(score.SMAPE,'%')} | 有效天数：${score.count}/6`;
+document.getElementById('origin-metrics-note').textContent=score.count===0?'暂无可评分数据':score.count<6?'仅按有效天数计算':'按本次 D+2～D+7 六个目标日的误差取平均';
 }
 select.addEventListener('change',draw);draw();
 """.replace("PAYLOAD", payload)
+    comparison_note = "<p>当前曲线及本次指标对应首个实验，按该实验自身有效样本计算。</p>" if "run" in metrics.columns else ""
     page = f"""<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>{escape(title)}</title>
 <style>body{{font:15px system-ui;max-width:1050px;margin:35px auto;padding:0 20px;color:#253341}}table{{border-collapse:collapse;width:100%}}td,th{{padding:7px;border-bottom:1px solid #ddd;text-align:left}}svg{{width:100%;height:auto}}pre{{white-space:pre-wrap}}.note{{background:#f0f5f7;padding:14px}}</style>
 <h1>{escape(title)}</h1><p class="note">{escape(note)}</p>
 <label>预测起点 <select id="origin"></select></label><p>蓝色：预测；橙色：真实</p>
 <svg id="curve" viewBox="0 0 800 290"></svg><pre id="values"></pre>
+<section class="note" aria-live="polite"><h2>本次六天预测指标</h2>{comparison_note}
+<p id="origin-metrics">MAE：— | MSE：— | SMAPE：— | 有效天数：0/6</p>
+<p id="origin-metrics-note">暂无可评分数据</p></section>
 <h2>误差分布</h2><img alt="误差分布" src="data:image/png;base64,{png}" style="max-width:100%">
 <h2>评价指标</h2><p>{escape(SMAPE_NOTE)}</p>{metrics.to_html(index=False, na_rep='—', escape=True)}<script>{script}</script></html>"""
     path.write_text(page, encoding="utf-8")
