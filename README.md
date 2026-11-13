@@ -1,5 +1,7 @@
 # 六天实时电价日均预测开发框架
 
+当前 LightGBM 的数据库刷新与上线运行见 [ONLINE.md](ONLINE.md)：`--load-data` 只覆盖三份日度 CSV，配套 `configs/lightgbm_online.yaml` 不读取小时 CSV。
+
 在北京时间 D 日中午前，预测 D+2～D+7 六天的实时电价日均价。默认单次命令仍使用最近已知价参考模型；现包含四阶段实验、价格日历特征、Ridge、CatBoost、LightGBM、共享/独立模型及用户天气宽表接口。自动化测试与预检查不代表已完成模型选择或精度优化；正式实验由用户运行。
 
 **四阶段实验请先阅读 [BATCH_RUNS.md](BATCH_RUNS.md)**；天气接口规范见 [WEATHER_DATA.md](WEATHER_DATA.md)。

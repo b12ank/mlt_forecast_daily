@@ -14,6 +14,7 @@ import pandas as pd
 import yaml
 
 from .availability import AVAILABILITY_POLICY, day, information_set
+from .snapshot import guarded_run
 from .data import DEVELOP, PROJECT, load_market, check_integrity, digest
 from .features import build_features
 from .features.schema import validate_groups, input_schema
@@ -65,6 +66,8 @@ def load_config(path=None):
 
 
 def validate_config(base):
+    if base["data"].get("market_input_mode", "daily_hourly") not in {"daily_hourly", "daily_only"}:
+        raise ValueError("data.market_input_mode 必须为 daily_hourly 或 daily_only")
     if base["task"] != {"horizons": [2, 3, 4, 5, 6, 7], "timezone": "Asia/Shanghai"}:
         raise ValueError("首版任务固定为北京时间 D+2～D+7")
     groups = base["features"]["groups"]
@@ -287,6 +290,7 @@ def metadata(config, market, mode, weather_data=None):
         source = prediction_weather_source(config, mode)
         sources.update({k: v for k, v in weather_data.sources.items() if source == "forecast" or k == "weather_history"})
     return {"status": "running", "mode": mode, "availability_policy": AVAILABILITY_POLICY, "timezone": "Asia/Shanghai",
+            "market_input_mode": config["data"].get("market_input_mode", "daily_hourly"),
             "evaluation": config["evaluation"], "sources": sources, "code_sha256": code,
             "rule_sha256": digest(PROJECT/"DATA_AVAILABILITY.md"),
             "python": platform.python_version(), "executable": __import__("sys").executable,
@@ -299,6 +303,7 @@ def metadata(config, market, mode, weather_data=None):
             "historical_revision_audit": "not_run", "publication_time_check": "not_run"}
 
 
+@guarded_run
 def check_backtest(config, market=None, weather_data=None):
     """Inspect backtest inputs without creating a model, fitting, predicting or writing files."""
     validate_config(config)
@@ -347,6 +352,7 @@ def check_backtest(config, market=None, weather_data=None):
             "note": "仅检查配置、输入数据、依赖与本地权重格式；未训练、未预测、未创建回测结果。检查通过不代表模型推理已验证。"}
 
 
+@guarded_run
 def run_experiment(config, mode, origin=None, output_dir=None, market=None, weather_data=None, progress=None, backend_cache=None, status_callback=None):
     # Validate the command and date range before creating output artifacts.
     if mode not in {"backtest", "predict"}:

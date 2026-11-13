@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from .availability import OFFSETS
+from .snapshot import dataset_lock
 
 DEVELOP = Path(__file__).resolve().parents[1]
 PROJECT = DEVELOP.parent
@@ -27,6 +28,7 @@ class MarketData:
     availability: dict = field(default_factory=dict)
     sources: dict = field(default_factory=dict)
     daily_rows: dict = field(default_factory=dict)
+    market_input_mode: str = "daily_hourly"
 
     @property
     def labels(self):
@@ -71,23 +73,43 @@ def read_table(path, encoding, hourly=False):
 
 
 def load_market(config):
+    if config.get("market_input_mode", "daily_hourly") == "daily_only":
+        with dataset_lock((PROJECT / config["daily"]).resolve().parent):
+            return _load_market(config)
+    return _load_market(config)
+
+
+def _load_market(config):
+    mode = config.get("market_input_mode", "daily_hourly")
+    if mode not in {"daily_hourly", "daily_only"}:
+        raise ValueError(f"未知市场输入模式: {mode}")
     tables, times, sources = {}, {}, {}
-    for freq in ("daily", "hourly"):
+    for freq in (("daily",) if mode == "daily_only" else ("daily", "hourly")):
         path = (PROJECT / config[freq]).resolve()
         tables[freq], times[freq] = read_table(path, config["encoding"], freq == "hourly")
         sources[freq] = {"path": str(path), "sha256": digest(path), "rows": len(tables[freq])}
     raw_dates = pd.read_csv(PROJECT/config["daily"], encoding=config["encoding"], usecols=["时刻"])["时刻"]
     daily_rows = {str(pd.Timestamp(d).date()): i+2 for i, d in enumerate(raw_dates)}
-    return MarketData(tables["daily"], tables["hourly"], times, sources, daily_rows)
+    if mode == "daily_only":
+        tables["hourly"] = tables["daily"].iloc[:0].copy()
+    return MarketData(tables["daily"], tables["hourly"], times, sources, daily_rows, mode)
 
 
 def check_integrity(market, tolerance=0.001):
     d, h = market.daily, market.hourly
-    if d.empty or h.empty:
-        raise ValueError("日表和小时表不得为空")
+    if d.empty:
+        raise ValueError("日表不得为空")
     expected = pd.date_range(d.index.min(), d.index.max(), freq="D")
     if not d.index.equals(expected):
         raise ValueError("日表日期不连续")
+    if market.market_input_mode == "daily_only":
+        return {"status": "passed", "market_input_mode": "daily_only",
+                "business_days": len(d), "nonempty_labels": int(d["实时电价"].notna().sum()),
+                "missing_labels": int(d["实时电价"].isna().sum()),
+                "hourly_cross_check": "not_run",
+                "note": "仅检查日表；数据库24小时聚合校验在 load-data 时执行，不保存同步报告。"}
+    if h.empty:
+        raise ValueError("小时表不得为空")
     business = (h.index - pd.Timedelta(hours=1)).normalize()
     grouped = h["实时电价"].groupby(business)
     stats = grouped.agg(["size", "count", "mean"])

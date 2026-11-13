@@ -5,7 +5,7 @@ __pycache__/
 outputs/
 build/
 dist/
-tests/
+tests/*
 
 # IDE files
 .idea/
@@ -15,3 +15,8 @@ tests/
 *.iws
 
 data/old_test
+.env
+.env.*
+!.env.example
+data/.load-data-*
+!tests/test_ingestion.py

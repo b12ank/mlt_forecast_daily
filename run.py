@@ -48,8 +48,12 @@ class BacktestProgress:
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "--load-data":
+        argv[0] = "load-data"
     parser = argparse.ArgumentParser(description="D+2～D+7 实时电价日均预测")
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("load-data", help="从数据库刷新三份日度 CSV（别名 --load-data）")
     for name in ("backtest", "predict"):
         command = sub.add_parser(name)
         command.add_argument("--config", default="configs/experiments/reference.yaml")
@@ -68,7 +72,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
     display = BacktestProgress() if args.command == "backtest" and not args.check_only else None
     try:
-        if args.command == "batch":
+        if args.command == "load-data":
+            from forecast.ingestion import refresh_data
+            refresh_data()
+            return 0
+        elif args.command == "batch":
             from forecast.batch import run_batch
             output, code = run_batch(args.suite, args.check_only, args.resume, args.selections)
             if output is not None:

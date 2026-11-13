@@ -1,4 +1,5 @@
 data:
+  market_input_mode: daily_hourly
   daily: 电价数据/shandong_pmos_daily.csv
   hourly: 电价数据/shandong_pmos_hourly.csv
   encoding: gb18030
