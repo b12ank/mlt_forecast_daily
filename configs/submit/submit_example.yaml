@@ -1,0 +1,10 @@
+# 使用：python run.py --submit --config configs/submit/submit_example.yaml
+# 试跑：在上述命令末尾添加 --dry-run，不连接数据库。
+# 裸 --submit 不读取本文件，固定使用 lightgbm 和北京时间当天。
+submit:
+  model: lightgbm  # catboost / lightgbm / timesfm（实际模型为 timesfm_xreg）
+  date: null      # null：北京时间当天；一个日期：严格预报；两个日期：允许范围回退
+  # 单日起点（替换上面的 date，不要重复保留同名键）：
+  # date: '2026-11-13'
+  # 起点闭区间，逐日预测 D+2～D+7：
+  # date: ['2026-10-01', '2026-10-10']

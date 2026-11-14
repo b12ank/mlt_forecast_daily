@@ -1,0 +1,19 @@
+# Source: outputs/20261108_143550_backtest_lightgbm_product/config.yaml
+# Model, ordered feature groups and matching policy copied from that run.
+# Data locations and run dates come from common settings; no archive is read at runtime.
+model:
+  name: lightgbm
+  strategy: shared
+  seed: 42
+  threads: 4
+  params:
+    max_depth: 5
+    num_leaves: 15
+    min_child_samples: 30
+    n_estimators: 300
+    learning_rate: 0.05
+    objective: regression
+features:
+  groups: [price_calendar, weather_full_no_missing]
+weather:
+  match_origins: true

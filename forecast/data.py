@@ -10,7 +10,18 @@ from .availability import OFFSETS
 from .snapshot import dataset_lock
 
 DEVELOP = Path(__file__).resolve().parents[1]
+# Parent-directory rule documents are retained for local research audits only.
 PROJECT = DEVELOP.parent
+
+
+def resolve_path(value, *, root=None):
+    """Resolve inputs against the repository, accepting the old develop/ prefix."""
+    path = Path(str(value).replace("\\", "/"))
+    if not path.is_absolute():
+        if path.parts and path.parts[0] == "develop":
+            path = Path(*path.parts[1:])
+        path = (DEVELOP if root is None else Path(root)) / path
+    return path.resolve()
 
 
 def digest(path):
@@ -74,7 +85,7 @@ def read_table(path, encoding, hourly=False):
 
 def load_market(config):
     if config.get("market_input_mode", "daily_hourly") == "daily_only":
-        with dataset_lock((PROJECT / config["daily"]).resolve().parent):
+        with dataset_lock(resolve_path(config["daily"]).parent):
             return _load_market(config)
     return _load_market(config)
 
@@ -85,10 +96,10 @@ def _load_market(config):
         raise ValueError(f"未知市场输入模式: {mode}")
     tables, times, sources = {}, {}, {}
     for freq in (("daily",) if mode == "daily_only" else ("daily", "hourly")):
-        path = (PROJECT / config[freq]).resolve()
+        path = resolve_path(config[freq])
         tables[freq], times[freq] = read_table(path, config["encoding"], freq == "hourly")
         sources[freq] = {"path": str(path), "sha256": digest(path), "rows": len(tables[freq])}
-    raw_dates = pd.read_csv(PROJECT/config["daily"], encoding=config["encoding"], usecols=["时刻"])["时刻"]
+    raw_dates = pd.read_csv(resolve_path(config["daily"]), encoding=config["encoding"], usecols=["时刻"])["时刻"]
     daily_rows = {str(pd.Timestamp(d).date()): i+2 for i, d in enumerate(raw_dates)}
     if mode == "daily_only":
         tables["hourly"] = tables["daily"].iloc[:0].copy()

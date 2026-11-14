@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .data import DEVELOP, PROJECT, digest, load_market
+from .configuration import config_files
 from .evaluation import smape_values
 from .features.xreg import SETS
 from .pipeline import load_config, validate_config, check_backtest, weather_context
@@ -50,7 +51,7 @@ def expand(selections_path=None, name='timesfm1'):
         validate_config(config)
         experiments.append({'id': identifier, 'model': 'timesfm_xreg', 'feature_set': identifier if name == 'timesfm1' else 'no_actual',
                             'strategy': 'independent', 'config': config})
-    return experiments, {}, [path, config_path, DEVELOP/'configs/default.yaml']
+    return experiments, {}, [path, *config_files(config_path)]
 
 
 def prepare(selections_path=None, name='timesfm1'):

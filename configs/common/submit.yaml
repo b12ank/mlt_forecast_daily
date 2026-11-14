@@ -1,0 +1,10 @@
+# Applied after the selected model/legacy configuration for predict and submit.
+# Paths are relative to the repository containing run.py, not the YAML or shell cwd.
+data:
+  market_input_mode: daily_only
+  daily: data/shandong_pmos_daily.csv
+  hourly: ''
+  encoding: gb18030
+weather:
+  history: data/weather_data_daily.csv
+  forecast: data/weather_data_daily_predict.csv

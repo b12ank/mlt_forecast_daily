@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from .availability import day
-from .data import PROJECT, digest
+from .data import resolve_path, digest
 from .features.daily import MissingHistory
 
 PROTOCOL = "wide_daily_weather_research_v1"
@@ -40,6 +40,9 @@ def weather_columns(group):
 
 
 SCENARIOS = {
+    "weather_selection_pending": "尚未完成逐起点天气检查；具体发布时间及历史版本校验均未执行。",
+    "history_train_history_inference": "历史天气训练、历史天气推理：理想信息条件下的历史补算，不代表历史预报回测精度；具体发布时间及历史版本校验均未执行。",
+    "history_train_mixed_inference": "训练使用历史天气；各起点分别使用预报或整组回退历史天气。历史回退属于理想信息条件下的历史补算，不代表历史预报回测精度；具体发布时间及历史版本校验均未执行。",
     "none": "未使用天气输入。",
     "history_target_weather_research": "理想信息条件下的开发实验：使用历史目标日天气，不是历史预报回测精度，不能据此宣称预报天气的实际增益。",
     "history_train_forecast_inference": "历史天气训练、预报天气推理：使用用户提供的D日起点预报文件；未执行具体发布时间及历史版本校验。",
@@ -65,7 +68,7 @@ class WeatherData:
             self._load("forecast")
 
     def _load(self, source):
-        path = (PROJECT/self.config[source]).resolve()
+        path = resolve_path(self.config[source])
         try:
             with path.open(encoding="utf-8-sig", newline="") as stream:
                 header = next(csv.reader(stream), [])

@@ -1,9 +1,0 @@
-# 人工选择，不会自动晋级；stage2 支持两个或三个不同候选。
-# 当前选择三个模型，分别比较 F0/F1/F2，共九个实验。
-stage2_models: [ridge, catboost, lightgbm]
-# 第三批只比较 F3/F4/F5，共六个实验，不重跑 F2。
-stage3_models: [lightgbm, catboost]
-# 第四批参数搜索：可选 F0～F5，以下保留原第三批选择。
-stage4_combinations:
-  - { model: lightgbm, feature_set: F5 }
-  - { model: catboost, feature_set: F5 }

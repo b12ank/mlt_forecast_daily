@@ -2,13 +2,13 @@
 import importlib.metadata
 from dataclasses import replace
 import math
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from .timesfm import TimesFMModel, validate_params as price_params, DEFAULTS as PRICE_DEFAULTS
 from ..features.xreg import XRegHistory
+from ..data import resolve_path
 
 DEFAULTS = {**PRICE_DEFAULTS, 'ridge': 0.01}
 
@@ -66,7 +66,7 @@ class TimesFMXRegModel(TimesFMModel):
 
     def _load(self):
         check_dependencies()
-        key = (str(Path(self.params['checkpoint_dir']).resolve()), self.seed, self.threads)
+        key = (str(resolve_path(self.params['checkpoint_dir'])), self.seed, self.threads)
         if self.backend_cache is not None and key in self.backend_cache:
             self.backend, saved = self.backend_cache[key]
             self.runtime_metadata.update(saved)

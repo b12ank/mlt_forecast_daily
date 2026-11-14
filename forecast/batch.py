@@ -16,7 +16,8 @@ import uuid
 import pandas as pd
 import yaml
 
-from .data import DEVELOP, PROJECT, digest, load_market, check_integrity
+from .data import DEVELOP, PROJECT, digest, load_market, check_integrity, resolve_path
+from .configuration import config_files
 from .evaluation import SMAPE_NOTE
 from .models.regression import DEFAULTS, PACKAGES, check_dependency
 from .pipeline import (load_config, merge_config, validate_config, run_experiment, evaluate_runs,
@@ -70,7 +71,7 @@ def expand_suite(name, selections_path=None):
     exact_keys(baseline, expected["stage1"], "stage1")
     if set(baseline["models"]) != set(DEFAULTS):
         raise ValueError("第一批必须包含六种指定模型")
-    paths = [suite_path, baseline_path, DEVELOP/"configs/default.yaml"]
+    paths = [suite_path, baseline_path, *config_files()]
     selection = {"stage2_models": [], "stage3_models": [], "stage4_combinations": []}
     if name != "stage1":
         path = Path(selections_path) if selections_path else DEVELOP/"configs/selections.yaml"
@@ -217,7 +218,7 @@ def prepare(name, selections_path=None):
     source_hashes = {key: value["sha256"] for key, value in market.sources.items()}
     if any(needs_weather(e["config"]) for e in experiments):
         for key in (("history", "forecast") if weather_source == "forecast" else ("history",)):
-            path = PROJECT/base["weather"][key]
+            path = resolve_path(base["weather"][key])
             try:
                 source_hashes["weather_"+key] = digest(path) if path.is_file() else "missing"
             except OSError as exc:

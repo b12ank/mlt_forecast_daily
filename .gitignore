@@ -1,22 +1,62 @@
+# Local inputs, results and tests (keep on disk, do not publish)
+/data/
+/outputs/
+/tests/
+/docs/
+/doc/
+
+# Python, test scratch directories and build artifacts
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
-outputs/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+pytest-*/
+.venv/
+venv/
+.tox/
+.nox/
 build/
 dist/
-tests/*
 
-# IDE files
+# IDE and operating-system files
 .idea/
 .vscode/
 *.iml
 *.ipr
 *.iws
+.DS_Store
+Thumbs.db
 
-data/old_test
+# Credentials: only the placeholder example belongs in Git
 .env
 .env.*
 !.env.example
-data/.load-data-*
-!tests/test_ingestion.py
+
+# Local weights; do not ignore forecast/models/ source code
+/weights/
+/checkpoints/
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+
+# Historical configurations retained locally
+/configs/actual_backtest/
+/configs/catboost_config.yaml
+/configs/lightgbm_config.yaml
+/configs/experiments/
+/configs/suites/
+/configs/lightgbm_online.yaml
+/configs/selections.yaml
+
+# Research notes retained locally
+/BATCH_RUNS.md
+/WEATHER_DATA.md
+/TIMESFM.md
+
+!/timesFM/**

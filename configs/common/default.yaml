@@ -1,0 +1,24 @@
+# Shared runtime settings. Paths are relative to the repository containing run.py.
+data:
+  market_input_mode: daily_only
+  daily: data/shandong_pmos_daily.csv
+  hourly: ''  # data/shandong_pmos_hourly.csv
+  encoding: gb18030
+  mean_tolerance: 0.001
+  snapshot_origin: '2026-10-25'
+task:
+  horizons: [2, 3, 4, 5, 6, 7]
+  timezone: Asia/Shanghai
+weather:
+  weather_source: history  # Only controls backtest inference; submit chooses automatically.
+  history: data/weather_data_daily.csv
+  forecast: data/weather_data_daily_predict.csv
+  match_origins: false
+backtest:
+  training_target_start: '2022-01-01'
+  test: ['2026-07-01', '2026-10-20']
+  window: expanding
+  retrain_days: 1
+evaluation:
+  protocol: evaluation_v1
+  equal_tolerance: 0.00000001

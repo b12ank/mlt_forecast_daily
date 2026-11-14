@@ -1,5 +1,4 @@
 """Small orchestration layer shared by backtests and explicit-origin predictions."""
-from copy import deepcopy
 import importlib.metadata
 import json
 from pathlib import Path
@@ -14,6 +13,8 @@ import pandas as pd
 import yaml
 
 from .availability import AVAILABILITY_POLICY, day, information_set
+from .configuration import load_config, merge_config, apply_live_settings
+from .inference import preflight_weather, normalize_origins
 from .snapshot import guarded_run
 from .data import DEVELOP, PROJECT, load_market, check_integrity, digest
 from .features import build_features
@@ -32,37 +33,6 @@ def now():
 def format_elapsed(seconds):
     minutes, seconds = divmod(int(seconds + 0.5), 60)
     return f"{minutes}min{seconds:02d}s"
-
-
-def merge_config(base, override, path=""):
-    if not isinstance(override, dict):
-        raise ValueError("配置必须为映射")
-    result = deepcopy(base)
-    for key, value in override.items():
-        if key not in base:
-            raise ValueError(f"未知配置项: {key}")
-        key_path = f"{path}.{key}" if path else key
-        if key_path == "model.params":
-            if not isinstance(value, dict):
-                raise ValueError("model.params 必须为映射")
-            result[key] = deepcopy(value)
-        elif isinstance(base[key], dict):
-            result[key] = merge_config(base[key], value, key_path)
-        else:
-            if type(value) is not type(base[key]):
-                raise ValueError(f"配置类型不匹配: {key}")
-            result[key] = value
-    return result
-
-
-def load_config(path=None):
-    base = yaml.safe_load((DEVELOP/"configs/default.yaml").read_text(encoding="utf-8"))
-    if path:
-        resolved = Path(path)
-        if not resolved.is_absolute():
-            resolved = DEVELOP/resolved
-        base = merge_config(base, yaml.safe_load(resolved.read_text(encoding="utf-8")))
-    return validate_config(base)
 
 
 def validate_config(base):
@@ -145,6 +115,20 @@ def weather_context(config, mode):
             "weather_publication_time_check": "not_run", "weather_historical_revision_audit": "not_run"}
 
 
+def live_weather_context(config, details):
+    context = weather_context(config, "predict")
+    sources = {d["weather_source"] for d in details}
+    source = next(iter(sources)) if len(sources) == 1 else "mixed" if sources else "not_run"
+    scenario = {"history": "history_train_history_inference", "mixed": "history_train_mixed_inference",
+                "forecast": "history_train_forecast_inference", "none": "none",
+                "not_run": "weather_selection_pending"}[source]
+    context.update(weather_scenario=scenario, weather_note=SCENARIOS[scenario],
+                   weather_prediction_source=source,
+                   weather_matching_source=source if config["weather"]["match_origins"] else "none",
+                   weather_origins=details)
+    return context
+
+
 def build_at(market, origin, groups, weather_data=None, match_origins=False, weather_source="history", context_length=512):
     # Integrity checks cover both tables; daily features only receive daily records.
     info = information_set(market.daily, market.hourly.iloc[:0], origin)
@@ -204,7 +188,8 @@ def training_set(market, origin, config, cache=None, weather_data=None):
     return X, y
 
 
-def predict_origins(market, origins, config, model_factory=None, weather_data=None, progress=None, weather_source="history", runtime_metadata=None, backend_cache=None, status_callback=None):
+def predict_origins(market, origins, config, model_factory=None, weather_data=None, progress=None, weather_source="history", runtime_metadata=None, backend_cache=None, status_callback=None, weather_sources=None):
+    """Optional Timestamp-keyed weather_sources overrides inference only; training stays history."""
     rows, records, provenance, cache = [], [], [], {}
     factory = model_factory or (lambda: create_model(config["model"], config["features"]["groups"]))
     is_timesfm = config["model"]["name"] in {"timesfm", "timesfm_xreg"}
@@ -216,6 +201,9 @@ def predict_origins(market, origins, config, model_factory=None, weather_data=No
         runtime_metadata["timesfm"] = shared_model.runtime_metadata
     for index, origin in enumerate(origins, 1):
         d = day(origin)
+        source = weather_source if weather_sources is None else weather_sources[d]
+        if source not in {"history", "forecast"}:
+            raise ValueError(f"未知天气来源: {source}")
         row = {"predict_time": str(d.date()), "D+2": str((d+pd.Timedelta(days=2)).date()),
                "D+7": str((d+pd.Timedelta(days=7)).date())}
         row.update({f"pred_D+{h}": np.nan for h in range(2, 8)})
@@ -224,7 +212,7 @@ def predict_origins(market, origins, config, model_factory=None, weather_data=No
                             target_start=row["D+2"], target_end=row["D+7"])
         try:
             X, evidence = build_at(market, d, config["features"]["groups"], weather_data,
-                                   config["weather"]["match_origins"], weather_source, context_length)
+                                   config["weather"]["match_origins"], source, context_length)
             model = shared_model if is_timesfm else factory()
             if model.requires_training:
                 train_X, train_y = training_set(market, d, config, cache, weather_data)
@@ -289,10 +277,12 @@ def metadata(config, market, mode, weather_data=None):
         # History backtests do not depend on a forecast file loaded by another caller.
         source = prediction_weather_source(config, mode)
         sources.update({k: v for k, v in weather_data.sources.items() if source == "forecast" or k == "weather_history"})
+    rule = PROJECT / "DATA_AVAILABILITY.md"
+    rule_hash = digest(rule) if mode != "predict" or rule.is_file() else None
     return {"status": "running", "mode": mode, "availability_policy": AVAILABILITY_POLICY, "timezone": "Asia/Shanghai",
             "market_input_mode": config["data"].get("market_input_mode", "daily_hourly"),
             "evaluation": config["evaluation"], "sources": sources, "code_sha256": code,
-            "rule_sha256": digest(PROJECT/"DATA_AVAILABILITY.md"),
+            "rule_sha256": rule_hash, "rule_file_status": "provided" if rule_hash else "not_provided",
             "python": platform.python_version(), "executable": __import__("sys").executable,
             "dependencies": versions, "model": config["model"], "features": config["features"],
             "input_schema": input_schema(config["features"]["groups"], config["model"]["name"],
@@ -352,24 +342,42 @@ def check_backtest(config, market=None, weather_data=None):
             "note": "仅检查配置、输入数据、依赖与本地权重格式；未训练、未预测、未创建回测结果。检查通过不代表模型推理已验证。"}
 
 
+def run_predict(request, status_callback=None):
+    config = apply_live_settings(request.config)
+    sources = {str(p): digest(p) for p in request.config_files}
+    return run_experiment(config, "predict", origins=request.origins, allow_history=request.allow_history,
+                          operational=True, configuration_sources=sources, status_callback=status_callback)
+
+
 @guarded_run
-def run_experiment(config, mode, origin=None, output_dir=None, market=None, weather_data=None, progress=None, backend_cache=None, status_callback=None):
+def run_experiment(config, mode, origin=None, output_dir=None, market=None, weather_data=None, progress=None, backend_cache=None, status_callback=None,
+                   *, origins=None, allow_history=False, operational=False, configuration_sources=None):
     # Validate the command and date range before creating output artifacts.
     if mode not in {"backtest", "predict"}:
         raise ValueError(f"未知运行模式: {mode}")
-    origins = target_origins(config) if mode == "backtest" else [day(origin)]
+    if operational and mode != "predict":
+        raise ValueError("运行期预测选项仅用于 predict")
+    if mode == "backtest" and (origins is not None or allow_history):
+        raise ValueError("回测不得覆盖起点或启用历史天气回退")
+    if allow_history and not operational:
+        raise ValueError("历史天气回退仅用于运行期日期范围预测")
+    origins = target_origins(config) if mode == "backtest" else normalize_origins([origin] if origins is None else origins)
     validate_config(config)
     weather_source = prediction_weather_source(config, mode)
     timed = mode == "backtest"
     started_at = now() if timed else None
     start = time.perf_counter() if timed else None
-    notify = status_callback if timed else None
+    notify = status_callback
     if notify:
         notify("preparing")
     directory = new_output(mode) if output_dir is None else Path(output_dir)
     if output_dir is not None:
         directory.mkdir(parents=True, exist_ok=False)
-    meta = {"status": "running", "mode": mode, **weather_context(config, mode)}
+    details, records = [], []
+    context = live_weather_context(config, details) if operational else weather_context(config, mode)
+    meta = {"status": "running", "mode": mode, **context}
+    if configuration_sources is not None:
+        meta["configuration_sources"] = configuration_sources
     try:
         (directory/"config.yaml").write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
         if timed:
@@ -380,22 +388,34 @@ def run_experiment(config, mode, origin=None, output_dir=None, market=None, weat
             weather_data = WeatherData(config["weather"], load_forecast=weather_source == "forecast")
         if not needs_weather(config):
             weather_data = None
-        meta = metadata(config, market, mode, weather_data)
+        meta.update(metadata(config, market, mode, weather_data))
+        meta.update(context)
         if timed:
             meta["started_at"] = started_at
         forecast_coverage = None
         if mode == "backtest" and weather_data is not None and weather_source == "forecast":
             forecast_coverage = weather_data.check_forecast_coverage(config["backtest"]["test"])
-        if config["model"]["name"] == "timesfm_xreg" and weather_data is not None:
+        weather_sources = None
+        if operational:
+            weather_sources, details = preflight_weather(config, weather_data, origins, allow_history)
+            context = live_weather_context(config, details)
+            meta.update(context)
+        elif config["model"]["name"] == "timesfm_xreg" and weather_data is not None:
             for d in origins:
                 weather_data.select_range(d-pd.Timedelta(days=config['model']['params'].get('context_length', 512)), d-pd.Timedelta(days=1), "history")
                 weather_data.select_range(d, d+pd.Timedelta(days=7), weather_source)
-        if mode == "predict" and weather_data is not None:
-            weather_data.select(day(origin), source="forecast")
+        if mode == "predict" and weather_data is not None and not operational:
+            for d in origins:
+                weather_data.select(d, source="forecast")
         integrity = check_integrity(market, config["data"]["mean_tolerance"])
         predictions, records, features = predict_origins(market, origins, config, weather_data=weather_data, progress=progress,
                                                        weather_source=weather_source, runtime_metadata=meta, backend_cache=backend_cache,
+                                                       **({"weather_sources": weather_sources} if operational else {}),
                                                        **({"status_callback": notify} if notify else {}))
+        if operational:
+            failures = [f"{r['predict_time']}: {r['reason']}" for r in records if r["status"] != "passed"]
+            if failures:
+                raise ValueError("整批预测失败: " + "; ".join(failures))
         if notify:
             notify("saving")
         # Future truth can only be joined after the prediction loop has finished.
@@ -405,7 +425,7 @@ def run_experiment(config, mode, origin=None, output_dir=None, market=None, weat
             table.to_csv(directory/f"{name}.csv", index=False, encoding="utf-8-sig")
         write_json(directory/"features.json", {"sources": meta["sources"],
             "input_schema": meta["input_schema"],
-            **weather_context(config, mode),
+            **context,
             "groups": config["features"]["groups"],
             "extended_definitions": "Each origin record includes exact raw records, transformations, missing policy and availability basis.",
             "definitions": {**({
@@ -420,7 +440,7 @@ def run_experiment(config, mode, origin=None, output_dir=None, market=None, weat
         write_json(directory/"checks.json", {"integrity": integrity, "origins": records,
                    "availability_policy": AVAILABILITY_POLICY, "publication_time_check": "not_run",
                    "automated_tests": "not_run", "hourly_features": "not_run",
-                   "weather": {**weather_context(config, mode),
+                   "weather": {**context,
                                "forecast_test_coverage": forecast_coverage,
                                "date_coverage_check": "enforced_per_origin" if weather_data is not None else "not_run"}})
         failures = sum(r["status"] != "passed" for r in records)
@@ -435,7 +455,8 @@ def run_experiment(config, mode, origin=None, output_dir=None, market=None, weat
                      f"预测起点 {meta['origin_start']}～{meta['origin_end']}。"
                      f"模型 {config['model']['name']} / {config['model']['strategy']}；特征 {config['features']['groups']}。"
                      "按分字段业务边界取数；电价及电网"
-                     "未执行具体发布时间校验；历史修订版本未独立核验。"+meta["weather_note"])
+                     "未执行具体发布时间校验；历史修订版本未独立核验。"+meta["weather_note"],
+                     **({"origin_details": details} if operational else {}))
         meta["status"] = "partial" if meta.get("failed_origins", 0) else "passed"
         metrics.to_csv(directory/"metrics.csv", index=False, encoding="utf-8-sig")
         if timed:
@@ -446,7 +467,8 @@ def run_experiment(config, mode, origin=None, output_dir=None, market=None, weat
                 stream.write(f"runtime,elapsed_time,{format_elapsed(elapsed)},\n")
         write_json(directory/"metadata.json", meta)
         if notify:
-            notify("finished", status=meta["status"], elapsed_seconds=meta["elapsed_seconds"])
+            notify("finished", status=meta["status"],
+                   **({"elapsed_seconds": meta["elapsed_seconds"]} if timed else {}))
         return directory
     except (Exception, KeyboardInterrupt) as exc:
         status = "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed"
@@ -455,9 +477,10 @@ def run_experiment(config, mode, origin=None, output_dir=None, market=None, weat
             meta.update(started_at=started_at, ended_at=now(), elapsed_seconds=time.perf_counter()-start)
             (directory/"metrics.csv").unlink(missing_ok=True)
         write_json(directory/"metadata.json", meta)
-        write_json(directory/"checks.json", {"status": status, "error": meta["error"], **weather_context(config, mode)})
+        write_json(directory/"checks.json", {"status": status, "error": meta["error"],
+                                            "origins": records, **context})
         if notify:
-            notify(status, elapsed_seconds=meta["elapsed_seconds"])
+            notify(status, **({"elapsed_seconds": meta["elapsed_seconds"]} if timed else {}))
         raise
 
 

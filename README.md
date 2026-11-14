@@ -1,183 +1,76 @@
-# 六天实时电价日均预测开发框架
+# D+2～D+7 实时电价日均预测
 
-当前 LightGBM 的数据库刷新与上线运行见 [ONLINE.md](ONLINE.md)：`--load-data` 只覆盖三份日度 CSV，配套 `configs/lightgbm_online.yaml` 不读取小时 CSV。
+在起点 D 预测 D+2～D+7 六个业务日的实时电价日均价。日常上线使用 `load-data` 同步数据、`predict` 生成本地报告、`submit` 上传结果；`backtest`、`evaluate` 和 `batch` 接口继续保留，程序、依赖及结果格式不变。
 
-在北京时间 D 日中午前，预测 D+2～D+7 六天的实时电价日均价。默认单次命令仍使用最近已知价参考模型；现包含四阶段实验、价格日历特征、Ridge、CatBoost、LightGBM、共享/独立模型及用户天气宽表接口。自动化测试与预检查不代表已完成模型选择或精度优化；正式实验由用户运行。
+## 部署目录与环境
 
-**四阶段实验请先阅读 [BATCH_RUNS.md](BATCH_RUNS.md)**；天气接口规范见 [WEATHER_DATA.md](WEATHER_DATA.md)。
-
-新增 TimesFM 2.5 纯历史电价基线：默认使用截至 D−1 的连续 512 天日价，预测 D～D+7 后输出 D+2～D+7。通过 `--config configs/experiments/timesfm.yaml` 接入现有回测和预测，独立安装与权重配置见 [TIMESFM.md](TIMESFM.md)。四阶段实验清单保持不变。
-
-stage2 支持从 Ridge、CatBoost、LightGBM 中人工选择两个或三个不同模型。当前 `configs/selections.yaml` 已选择全部三个，每个分别比较 F0/F1/F2，共九个串行实验。
-
-stage3 默认对 LightGBM、CatBoost 比较 F3（天气＋缺失标记，520列）、F4（天气，260列）、F5（F0＋天气且无天气缺失标记，302列），共六个实验，不重跑F2。原stage3参数搜索已迁移至stage4，可选择F0～F5与共享/独立结构。候选配置分别使用 `stage3_models` 和 `stage4_combinations`。
-
-业务约束以根目录 `AGENTS.md` 与 `DATA_AVAILABILITY.md` 为准。当前数据快照的取数起点是 **2026-10-25**，不能由文件末行日期推断预测起点。
-
-## 目录与职责
+本文以 **`develop/` 仓库目录为运行根目录**，所有运行、安装和测试命令均在该目录执行。目录布局：
 
 ```text
 develop/
-├── README.md
-├── environment.yml                 # Conda 环境：long_terem_epf
-├── .gitignore
-├── run.py                          # 唯一命令入口
-├── configs/
-│   ├── default.yaml                # 公共数据、任务、评价协议
-│   └── experiments/reference.yaml  # 实验特征与模型选择
-├── forecast/
-│   ├── __init__.py
-│   ├── data.py                     # 只读加载及标签一致性检查
-│   ├── availability.py             # 按字段构建合法信息集
-│   ├── pipeline.py                 # 配置、训练、回测、结果保存
-│   ├── batch.py                    # 四阶段串行执行、续跑、汇总
-│   ├── weather_data.py             # 用户历史/预报日度宽表与来源区分
-│   ├── evaluation.py               # 固定评价与独立 HTML 报告
-│   ├── features/
-│   │   ├── __init__.py
-│   │   ├── daily.py                # 最新价格、源日期、数据年龄
-│   │   ├── hourly.py               # 未实现，显式启用时报错
-│   │   ├── price_calendar.py       # 历史价格、滚动、日历与追溯
-│   │   └── weather.py              # 旧 weather 组仍报错，使用新宽表接口
-│   └── models/
-│       ├── __init__.py
-│       ├── reference.py
-│       └── regression.py           # 简单均值、Ridge、树模型及独立结构
-├── tests/
-│   ├── test_availability.py
-│   ├── test_pipeline.py
-│   ├── test_evaluation.py
-│   ├── test_commands.py
-│   └── conftest.py
-└── outputs/                        # 每次运行独立目录；不覆盖
+  configs/
+  forecast/
+  run.py
+  requirements.txt
+  .env.example
+  .env                   # 本地创建，不提交
+  data/                  # load-data 获取，不提交
+  outputs/               # 运行时生成，不提交
 ```
 
-市场数据从项目根目录电价目录读取；天气直接读取用户提供的 `develop/data/` 下两份日度CSV，不复制、不修改。动力煤不进入当前读取链路。运行结果和pytest缓存放在 `outputs/`；测试小型数据只在pytest临时目录构造，不作为项目天气样例交付。
-
-## 环境安装
-
-在项目根目录使用 PowerShell：
+首次下载时，将地址替换为实际仓库地址；已有检出直接进入 `develop/`：
 
 ```powershell
-conda env create -f develop/environment.yml
-conda activate long_terem_epf
-python -m pip install -r develop/requirements.txt
+git clone <仓库地址> develop
+Set-Location develop
 ```
 
-环境使用 Python 3.11，运行和测试依赖见上述安装命令。环境已经存在时直接激活，不重复创建。也可以用 `conda run -n long_term_epf python ...` 执行。
-
-## 运行
-
-以下均从项目根目录执行。命令无需指定具体取数时刻；电价及同表电网输入统一按分字段业务边界取数。业务任务仍是在 D 日中午前预测未来六天。
+进入仓库后准备环境：
 
 ```powershell
-# 运行配置 backtest.test 指定的开发调优区间
-python develop/run.py backtest
-
-# 六天未知未来预测；actuals.csv 全部为空
-python develop/run.py predict --date 2026-10-25
-
-# 重新评分或比较多个结果；命令会创建新的评价目录
-python develop/run.py evaluate --runs <运行编号1> <运行编号2>
-
-# 测试临时数据位于开发目录
-python -m pytest develop/tests -o cache_dir=develop/outputs/pytest-cache -q
+# 仅首次部署时创建，已有 .env 时不要覆盖
+conda create -n env_name python=3.11
+conda activate env_name
+python -m pip install -r requirements.txt
 ```
 
-从 `develop/` 执行时使用 `python run.py ...`。相对配置路径始终相对 `develop/`，数据路径始终相对项目根目录，评价运行编号始终相对 `develop/outputs/`；不依赖 shell 当前目录。绝对配置和评价目录路径也支持。
+`--config` 的相对路径以仓库目录为基准，支持绝对路径。配置内部的数据相对路径仍由程序按仓库上一层解析，例如 `develop/data/...` 指向本仓库的 `data/`；终端工作目录不会改变这一规则。
 
-每个命令打印输出目录。命令行参数错误退出码为 2，运行异常退出码为 1。找不到合法历史价格时保留失败预测行，在 `checks.json` 中说明原因，运行状态为 `partial`，不能只依据进程成功判断预测完整性。
+编辑本地 `.env`，设置 `DB_HOST`、`DB_PORT`、`DB`、`DB_USER`、`DB_PWD`；示例只有占位值，同名环境变量优先。真实凭据不随仓库提供。TimesFM XReg 还需自行准备本地权重，并将所用配置的 `model.params.checkpoint_dir` 设为实际目录；仓库保留原路径，不自动下载权重。
 
-## 数据边界与标签
-
-| 字段类别 | 日度业务日上限 | 小时记录上限（含端点） |
-|---|---|---|
-| 实时电价、实际值 | D−1 | D 00:00 |
-| 日前电价 | D | D+1 00:00 |
-| 电网预测值 | D+1 | D+2 00:00 |
-
-电价 CSV 编码为 GB18030，日期列实际名称为 **`时刻`**。小时业务日为 `date(timestamp - 1 hour)`；日表不再次移日。未知列拒绝进入输入，不能把所有含“预测”字样的列自动视为已知未来数据。
-
-支持可选的 `<字段名>__available_at` 元数据列，非空值必须含时区。元数据保留读取但不进入数值特征，也不参与筛选或扩展业务边界。当前策略为 `business_boundaries_only_v1`，输出明确记录 `publication_time_check: not_run`。已有修订版本尚未独立核验，不能将业务边界检查通过解释为发布时间或历史版本审计通过。
-
-回测和预测启动时自动执行数据完整性检查。标签始终来自日表实时价。核对小时业务日与日表一致、每个业务日有 24 个不同整点、有效标签对应 24 个非空小时价、均价绝对误差不超过 0.001。日价和小时价都未发布的尾部日期可以保留为空；部分小时缺失、重复记录或不一致均阻止正式运行，不会悄悄重算标签。
-
-市场特征模块只能接收按起点截断后的信息集，小时表用于完整性检查，尚未增强预测。天气默认关闭；启用后训练始终读取目标日历史天气。按用户2026-10-29更新，回测推理由 `weather.weather_source: history/forecast` 控制，现有配置默认 history；批量运行继承 `configs/default.yaml`，单次回测使用 `--config` 指定配置。history 标为“理想信息条件下的开发实验”，forecast 标为“历史天气训练、预报天气推理”，两者分别运行、分别评估。forecast 要求预报表完整覆盖 `backtest.test` 闭区间（含内部每一天），不满足时在训练前报错或阻塞，不自动缩短区间。`predict --date D` 保持单日起点，固定使用预报天气推理。所有天气场景均不声称通过具体发布时间或历史版本审计，详见 `WEATHER_DATA.md`。
-
-## 回测区间与训练
-
-| 集合 | 目标日期 | 预测起点 D |
-|---|---|---|
-| 初始训练历史 | 自 2022-01-01 起，逐次受标签成熟限制 | 自动选取 |
-| 开发调优 | 2026-07-01～2026-10-20 | 2026-06-29～2026-10-13 |
-
-回测沿用配置键 `backtest.test`，只选择 D+2～D+7 全部落在该目标区间内的起点，共 107 个起点、642 个预测值。首条曲线为 2026-07-01～07-06，末条曲线为 2026-10-15～10-20。`validation` 配置已删除，旧实验配置也需移除该项，否则会报“未知配置项”；可通过 `--config` 覆盖 `backtest.test` 来调整回测目标区间。历史运行目录中的配置快照保留原样。
-
-训练采用扩展窗口、每日新建模型重训。历史样本 d 必须满足 `d+7 <= D-1`，六天标签全部成熟且有值；其特征按 d 自身的边界构建。允许使用此前已经成熟的标签更新模型，也允许依据当前回测区间的成绩开发调优；该区间不再作为独立保留测试集。
-
-参考模型 `requires_training=False`，调用空训练的 `fit`，不会浪费时间构造无用训练集。可训练模型设为 `True` 后，流程统一调用 `training_set`，其参数拟合也必须在 `fit` 内完成。测试模型已用于验证标签成熟、训练输入与拟合状态对未来数据扰动的不变性；这不等于未来新增模型已通过验收。
-
-## 输出与评价
-
-每次预测或回测保存：
-
-- `config.yaml`：递归合并后的完整配置；列表整体替换，未知项或类型错误报错。
-- `metadata.json`：状态、数据及代码哈希、环境版本、时区、数据边界策略、目标区间、预测起点范围、运行用途、模型和评价协议。源文件哈希在输入特征之外，不参与预测。
-- `predictions.csv`：每个预测起点一行，固定九列。
-- `actuals.csv`：相同日期键和六列真实值；未来预测为空。
-- `metrics.csv`：`scope, metric, value, count`；无法定义的指标为空。
-- backtest（包括 batch 内的回测）的 `metrics.csv` 最后一行额外记录 `runtime,elapsed_time,50min20s,` 形式的总耗时；`count` 为空。耗时四舍五入至秒，分钟不转换为小时，例如 `75min03s`。由于 `value` 包含这一文本行，程序读取时须先筛选评分指标，再用 `pd.to_numeric` 转为数值。
-- `checks.json`：数据检查、各起点状态与失败原因；未运行的检查明确为 `not_run`。
-- `features.json`：特征定义、输入文件与来源日期、原值、数据年龄和可用性依据。
-- `report.html`：无需联网的报告，可选择预测起点查看六天曲线、数值、误差分布及指标。
-
-预测表严格为：
-
-```text
-predict_time,D+2,D+7,pred_D+2,pred_D+3,pred_D+4,pred_D+5,pred_D+6,pred_D+7
-```
-
-真实值表将 `pred_` 替换为 `true_`。CSV 使用 UTF-8 BOM，日期为 `YYYY-MM-DD`，保留数值精度。不同起点预测同一目标日仍是不同业务预测，评分按记录等权。
-
-`evaluation_v1` 定义：
-
-1. 整体及 D+2～D+7 分步长 MAE、MSE、SMAPE；仅对预测和真实值均存在的记录评分。SMAPE 是兼容性追加指标，保留 `evaluation_v1` 和现有配置。
-2. 六天 15 对高低关系一致率，以及 5 个相邻日的涨跌/持平准确率。
-3. 内部 4 个日期的峰谷：正转负为峰、负转正为谷，含平价不算拐点。按起点、目标日期和峰谷类型精确匹配，计算总体 precision、recall、F1。
-4. 曲线指标相等容差为 1e-8，零分母记为空；F1 直接按 `2TP/(预测事件数+真实事件数)` 计算。该容差不用于 SMAPE。
-5. 曲线指标只使用六天全部有效的起点，同时报告预测、可评分和完整曲线覆盖率。
-
-SMAPE（%）= `100 × mean(2 × |预测值−真实值| / (|预测值|+|真实值|))`。数值 `20` 表示 `20%`，范围为 0～200%，越低越好。使用原始价格，不做小于 50 的截断，也不替换负价、接近零的价格或给分母添加 epsilon；双零点误差为 0。与 MAE、MSE 使用相同有效样本和共同样本掩码，无有效样本时为空且 `count=0`。整体对所有有效预测点等权平均，分步长分别跨预测起点平均，不先平均价格或对六个分步长指标简单平均。
-
-TimesFM 窗口及分月汇总同样包含 SMAPE；相对 L512 的 SMAPE 差值为百分点，相对变化按 `(当前值/基线值−1)×100` 计算，基线为 0 时为空。旧结果不覆盖；可用 `evaluate` 从原预测和标签生成包含 SMAPE 的新评价目录，无需重新训练。
-
-主要比较指标为 MAE，其他指标并列展示，不合成为总分。跨实验比较须有相同市场输入版本、业务规则、评价协议和边界策略，天气宽表版本与实验口径也须一致。允许无天气基线与历史天气研究模型对照，并显示共同成功样本及覆盖率，但不能据此宣称预报天气的实际增益。旧档案口径与新宽表研究不能混合，旧文件不修改。评价只读原结果并创建新目录；曲线展示首个实验。
-
-`evaluate` 只输出新指标、评价元数据和报告，不伪造未执行的训练或预测文件。完整训练/预测运行会生成全部八类文件。
-
-普通 `backtest` 默认在 stderr 单行更新当前预测起点和目标日期，数据准备、结果保存和结束时显示对应状态，不输出每轮训练日志。重定向 stderr 时只输出开始和结束/失败信息；stdout 仍输出结果目录。`predict`、`evaluate` 和 `--check-only` 不增加该进度或耗时行。
-
-回测总耗时从配置校验通过、创建输出目录前开始，到数据准备、训练、预测、评分及主要结果（包括 HTML 报告）保存完成后结束，使用单调时钟，不包含最终耗时字段本身的写入。`metadata.json` 记录北京时间（含时区偏移）的 `started_at`、`ended_at` 和数值型 `elapsed_seconds`。失败或 Ctrl+C 中断时记录已耗时间及 `failed`/`interrupted` 状态，不保留完整评分文件；强制结束进程不保证留下结束时间。batch 外层原有耗时另包含调用及产物哈希等开销，与单次回测计时范围不同。旧结果和已启动进程不补写；重新 `evaluate` 不生成原训练耗时。
-
-## 后续扩展规则
-
-- 新特征在 `features/` 实现，通过统一信息集读取数据，返回特征与来源记录，并增加对应边界和扰动测试。
-- 新模型在 `models/` 实现 `fit(X, y)`、`predict(X)` 和 `requires_training`，在创建入口增加显式分支；预测必须按输入顺序返回有限数值。
-- 特征表中的日期和步长是对齐信息；每种模型应明确使用的数值列，不得把所有列未经处理直接喂给模型。
-- 每个新实验只增加必要的配置，复用回测与评价代码。不得复制训练脚本形成多个版本。
-- 修改指标定义必须实现新协议版本；不能更改配置中的容差却仍称为 `evaluation_v1`。
-- 天气接口是否实现与天气可用性是否审计通过分别记录；本轮宽表接口属于用户授权的研究例外，不代表历史预报验证通过。
-
-
-## TimesFM XReg：timesfm1
-
-在 `long_term_epf` 环境中进入 `develop` 后运行：
+## 日常预测流程
 
 ```powershell
-python run.py batch --suite timesfm1 --check-only
-python run.py batch --suite timesfm1
+# 1. 读取源数据库，更新三份日度输入；不自动预测
+python run.py load-data
+
+# 2. 正式提交：默认固定 LightGBM、北京时间当天，写入结果表
+python run.py submit
 ```
 
-全特征基线与五个逐组消融，共六个实验；每个起点分别拟合六次 XReg，
-使用512天电价上下文，输出D+2～D+7。单独backtest、predict、预报天气切换、
-数据边界及续跑方法见 [TIMESFM.md](TIMESFM.md)。原stage1～stage4保持原有清单。
+## 其他命令
+```powershell
+# 本地预测并结果保存在outputs目录；不写数据库(2026-11-13预测2026-11-15~2026-11-20)
+python run.py predict --date 2026-11-13
+
+# 支持本地一段范围的预测结果保存在outputs目录；不写数据库
+python run.py submit --date 2026-10-01 2026-10-10
+
+# 单日预测结果保存到数据库
+python run.py submit --date 2026-11-13
+
+# 支持回传一段范围的预测结果保存到数据库
+python run.py submit --date 2026-10-01 2026-10-10
+
+# 本地预测通过配置文件控制模型、日期范围
+python run.py predict --config configs/predict/predict_example.yaml
+
+# 提交也支持通过配置文件指定参数（指定模型、日期范围）
+python run.py submit --config configs/submit/submit_example.yaml
+```
+
+`--load-data`、`--submit` 分别是对应子命令的别名。示例日期请按数据覆盖调整：例如起点 `2026-11-13` 需要到 `2026-11-20` 的天气预报，缺日时单日调用失败。`predict` 不是 `submit` 的前置步骤，两者都不会自动同步数据。
+
+训练始终使用历史天气。单日提交严格使用预报；日期范围逐起点检查，缺预报时整个推理天气区间回退历史天气，历史也缺日则失败。树模型需 D+2～D+7，TimesFM XReg 需 D～D+7 和截至 D−1 的历史窗口。历史回退标注“理想信息条件下的历史补算”；具体发布时间与历史版本校验均未执行。
+
+提交只读 `data/` 最新三份日度文件，不生成 `outputs`。`--config` 与 `--date` 互斥，`--dry-run` 可与两者分别组合。全部预测和校验成功后才在一个事务中写入 `epf_mlt_forecast_daily_result`，按 `(forecast_date, target_date, product_type, model_name)` 更新已有记录。

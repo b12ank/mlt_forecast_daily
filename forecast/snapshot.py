@@ -119,8 +119,8 @@ def guarded_run(function):
     def guarded(config, *args, **kwargs):
         if config["data"].get("market_input_mode", "daily_hourly") != "daily_only":
             return function(config, *args, **kwargs)
-        from .data import PROJECT
-        directory = (PROJECT / config["data"]["daily"]).resolve().parent
+        from .data import resolve_path
+        directory = resolve_path(config["data"]["daily"]).parent
         with dataset_lock(directory):
             return function(config, *args, **kwargs)
     return guarded

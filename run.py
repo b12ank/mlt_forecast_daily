@@ -4,7 +4,41 @@ import json
 import sys
 import unicodedata
 
-from forecast.pipeline import load_config, run_experiment, evaluate_runs, check_backtest, format_elapsed
+from forecast.pipeline import load_config, run_experiment, run_predict, evaluate_runs, check_backtest, format_elapsed
+from forecast.configuration import load_submit_config, load_predict_config, RequestConfigError
+from forecast.data import digest
+
+
+class ForecastProgress:
+    """Append immediately flushed CLI messages; library calls remain silent."""
+    def __init__(self, stream=None):
+        self.stream = sys.stdout if stream is None else stream
+
+    def write(self, message):
+        print(message, file=self.stream, flush=True)
+
+    def __call__(self, event, **info):
+        if event == "preparing":
+            self.write("正在读取并检查数据…")
+        elif event == "origin":
+            self.write(f"正在预测第 {info['current']}/{info['total']} 个起点：{info['predict_time']}")
+        elif event == "saving":
+            self.write("正在保存预测结果…")
+        elif event == "submitting":
+            self.write(f"正在入库：共 {info['row_count']} 条记录…")
+
+    def submission_finished(self, result, dry_run):
+        count, rows = result["origin_count"], result["row_count"]
+        if dry_run:
+            by_origin = {}
+            for row in result["rows"]:
+                by_origin.setdefault(row["forecast_date"], []).append(
+                    f"D+{row['horizon_days']}={row['forecast_value']:.4f}")
+            for origin, values in by_origin.items():
+                self.write(f"起点 {origin}：" + "，".join(values))
+            self.write(f"试跑完成：{count} 个起点，{rows} 条待入库记录，未连接数据库。")
+        else:
+            self.write(f"提交完成：{count} 个起点，{rows} 条记录。")
 
 
 class BacktestProgress:
@@ -49,19 +83,22 @@ class BacktestProgress:
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] == "--load-data":
-        argv[0] = "load-data"
+    if argv and argv[0] in {"--load-data", "--submit"}:
+        argv[0] = argv[0][2:]
     parser = argparse.ArgumentParser(description="D+2～D+7 实时电价日均预测")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("load-data", help="从数据库刷新三份日度 CSV（别名 --load-data）")
-    for name in ("backtest", "predict"):
-        command = sub.add_parser(name)
-        command.add_argument("--config", default="configs/experiments/reference.yaml")
-        if name == "backtest":
-            command.add_argument("--check-only", action="store_true",
-                                 help="只检查配置、数据、依赖和权重，不训练、不预测、不生成回测结果")
-        if name == "predict":
-            command.add_argument("--date", required=True, help="预测起点 YYYY-MM-DD")
+    command = sub.add_parser("submit", help="提交六天预测结果（别名 --submit），不生成 outputs 文件")
+    command.add_argument("--config", help="提交配置或旧模型配置；与 --date 互斥")
+    command.add_argument("--date", nargs="+", help="不传 --config 时可指定一个起点或两个闭区间端点；默认北京时间当天")
+    command.add_argument("--dry-run", action="store_true", help="训练并展示待提交结果，不连接数据库")
+    command = sub.add_parser("predict", help="预测单日或日期范围并保存报告，不连接数据库")
+    command.add_argument("--config", help="预测配置或完整模型配置；与 --date 互斥")
+    command.add_argument("--date", nargs="+", help="一个起点或两个闭区间端点；默认 LightGBM、北京时间当天")
+    command = sub.add_parser("backtest")
+    command.add_argument("--config", default="configs/experiments/reference.yaml")
+    command.add_argument("--check-only", action="store_true",
+                         help="只检查配置、数据、依赖和权重，不训练、不预测、不生成回测结果")
     command = sub.add_parser("evaluate")
     command.add_argument("--runs", nargs="+", required=True, help="outputs 下的运行编号或绝对路径")
     command = sub.add_parser("batch", help="串行运行人工选择的实验批次")
@@ -72,7 +109,24 @@ def main(argv=None):
     args = parser.parse_args(argv)
     display = BacktestProgress() if args.command == "backtest" and not args.check_only else None
     try:
-        if args.command == "load-data":
+        if args.command == "submit":
+            from forecast.submission import run_submit
+            request = load_submit_config(args.config, args.date)
+            config_sources = {str(path): digest(path) for path in request.config_files}
+            progress = ForecastProgress()
+            result = run_submit(request.config, request.origins, request.allow_history,
+                                dry_run=args.dry_run, status_callback=progress)
+            result["configuration_sources"] = config_sources
+            progress.submission_finished(result, args.dry_run)
+            return 0
+        elif args.command == "predict":
+            request = load_predict_config(args.config, args.date)
+            progress = ForecastProgress()
+            output = run_predict(request, status_callback=progress)
+            progress.write(f"预测完成：{len(request.origins)} 个起点。")
+            progress.write(f"结果目录：{output}")
+            return 0
+        elif args.command == "load-data":
             from forecast.ingestion import refresh_data
             refresh_data()
             return 0
@@ -92,6 +146,8 @@ def main(argv=None):
             output = run_experiment(load_config(args.config), args.command,
                                     getattr(args, "date", None),
                                     **({"status_callback": display} if display else {}))
+    except RequestConfigError as exc:
+        parser.error(str(exc))
     except KeyboardInterrupt:
         if display:
             display.close()

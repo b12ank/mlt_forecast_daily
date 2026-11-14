@@ -107,7 +107,7 @@ def evaluate(predictions, actuals, tolerance=1e-8, common_mask=None):
     return pd.DataFrame(rows)
 
 
-def write_report(path, predictions, actuals, metrics, title, note=""):
+def write_report(path, predictions, actuals, metrics, title, note="", origin_details=None):
     """Self-contained HTML with a selectable six-day SVG and an error histogram."""
     p, y = arrays(predictions, actuals)
     import matplotlib
@@ -126,6 +126,7 @@ def write_report(path, predictions, actuals, metrics, title, note=""):
     plt.close(fig)
     png = base64.b64encode(buffer.getvalue()).decode("ascii")
     data = []
+    details = {d["forecast_date"]: d for d in (origin_details or [])}
     for i, origin in enumerate(predictions["predict_time"]):
         valid = np.isfinite(p[i]) & np.isfinite(y[i])
         error = p[i, valid] - y[i, valid]
@@ -137,13 +138,16 @@ def write_report(path, predictions, actuals, metrics, title, note=""):
         data.append({"origin": origin, "dates": [(pd.Timestamp(origin)+pd.Timedelta(days=h)).strftime("%Y-%m-%d") for h in HORIZONS],
                      "pred": [float(v) if np.isfinite(v) else None for v in p[i]],
                      "actual": [float(v) if np.isfinite(v) else None for v in y[i]],
-                     "scores": scores})
+                     "scores": scores, "weather": details.get(origin)})
     payload = json.dumps(data, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c")
     script = """
 const data=PAYLOAD, select=document.getElementById('origin');
 data.forEach((r,i)=>{const o=document.createElement('option');o.value=i;o.textContent=r.origin;select.appendChild(o);});
 function draw(){
 const r=data[Number(select.value)]; if(!r)return;
+const weather=document.getElementById('origin-weather');
+weather.hidden=!r.weather;
+weather.textContent=r.weather?`weather_source=${r.weather.weather_source}；${r.weather.weather_note}；缺少预报日期：${r.weather.missing_forecast_dates.join(', ')||'无'}；回退原因：${r.weather.fallback_reason||'无'}；具体发布时间及历史版本校验均未执行。`:'';
 const vals=[...r.pred,...r.actual].filter(v=>v!==null); let lo=Math.min(...vals),hi=Math.max(...vals);
 if(!vals.length){lo=0;hi=1;} if(hi===lo){lo-=1;hi+=1;}
 const x=i=>70+i*132, y=v=>230-(v-lo)/(hi-lo)*180;
@@ -168,6 +172,7 @@ select.addEventListener('change',draw);draw();
 <style>body{{font:15px system-ui;max-width:1050px;margin:35px auto;padding:0 20px;color:#253341}}table{{border-collapse:collapse;width:100%}}td,th{{padding:7px;border-bottom:1px solid #ddd;text-align:left}}svg{{width:100%;height:auto}}pre{{white-space:pre-wrap}}.note{{background:#f0f5f7;padding:14px}}</style>
 <h1>{escape(title)}</h1><p class="note">{escape(note)}</p>
 <label>预测起点 <select id="origin"></select></label><p>蓝色：预测；橙色：真实</p>
+<p id="origin-weather" class="note" hidden></p>
 <svg id="curve" viewBox="0 0 800 290"></svg><pre id="values"></pre>
 <section class="note" aria-live="polite"><h2>本次六天预测指标</h2>{comparison_note}
 <p id="origin-metrics">MAE：— | MSE：— | SMAPE：— | 有效天数：0/6</p>

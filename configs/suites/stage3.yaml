@@ -1,4 +1,0 @@
-stage: stage3
-seed: 42
-threads: 4
-feature_sets: [F3, F4, F5]

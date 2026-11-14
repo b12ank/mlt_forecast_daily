@@ -1,0 +1,5 @@
+# 使用：python run.py predict --config configs/predict/predict_example.yaml
+# 单日 date: '2026-11-13'；闭区间 date: ['2026-10-01', '2026-10-10']
+predict:
+  model: lightgbm
+  date: '2026-11-13'

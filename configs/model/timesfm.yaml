@@ -1,0 +1,16 @@
+# Source: outputs/20261108_171304_backtest_timesfm_product/config.yaml
+# This is TimesFM XReg (no actual-grid covariates), not the pure price baseline.
+# Data locations and run dates come from common settings; no archive is read at runtime.
+model:
+  name: timesfm_xreg
+  strategy: independent
+  seed: 42
+  threads: 4
+  params:
+    context_length: 512
+    checkpoint_dir: timesFM
+    ridge: 0.01
+features:
+  groups: [price_history, xreg_dayahead, xreg_grid_forecast, weather_full, xreg_calendar]
+weather:
+  match_origins: true

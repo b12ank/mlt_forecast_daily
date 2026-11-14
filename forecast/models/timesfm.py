@@ -4,7 +4,6 @@ import importlib.metadata
 import json
 import math
 import os
-from pathlib import Path
 import random
 import shutil
 import sys
@@ -12,10 +11,10 @@ import sys
 import numpy as np
 import pandas as pd
 
-from ..data import PROJECT, digest
+from ..data import resolve_path, digest
 from ..features.price_history import PriceHistory
 
-DEFAULTS = {"context_length": 512, "checkpoint_dir": "E:/pycharmproject/epf/models/timesFM"}
+DEFAULTS = {"context_length": 512, "checkpoint_dir": "timesFM"}
 
 
 def validate_params(params):
@@ -62,7 +61,7 @@ def preflight(checkpoint):
         try:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError as exc:
-            raise ImportError("TimesFM 缺少依赖，请安装 develop/requirements.txt") from exc
+            raise ImportError("TimesFM 缺少依赖，请安装 requirements.txt 中的依赖") from exc
     import torch
     device, free_vram = "cpu", None
     if torch.cuda.is_available():
@@ -78,10 +77,7 @@ def preflight(checkpoint):
 def check_checkpoint(params):
     """Read local file structure only; never instantiate a model or materialize tensors."""
     params = validate_params(params)
-    checkpoint = Path(params["checkpoint_dir"])
-    if not checkpoint.is_absolute():
-        checkpoint = PROJECT/checkpoint
-    checkpoint = checkpoint.resolve()
+    checkpoint = resolve_path(params["checkpoint_dir"])
     resources = preflight(checkpoint)
     config_path = checkpoint/"config.json"
     model_config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -119,10 +115,7 @@ class TimesFMModel:
         return self
 
     def _load(self):
-        checkpoint = Path(self.params["checkpoint_dir"])
-        if not checkpoint.is_absolute():
-            checkpoint = PROJECT/checkpoint
-        checkpoint = checkpoint.resolve()
+        checkpoint = resolve_path(self.params["checkpoint_dir"])
         checked = preflight(checkpoint)
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
         import torch
